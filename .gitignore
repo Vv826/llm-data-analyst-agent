@@ -1,0 +1,24 @@
+# Python 虚拟环境与缓存
+venv/
+__pycache__/
+*.pyc
+
+# 前端依赖与构建产物
+frontend/node_modules/
+frontend/dist/
+
+# 本地数据文件
+uploads/
+chroma_db/
+*.csv
+*.xlsx
+*.pdf
+*.docx
+*.txt
+!requirements.txt
+
+# 配置与编辑器
+.env
+*.log
+.idea/
+.vscode/

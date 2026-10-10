@@ -1,0 +1,36 @@
+# AI 智能应用平台 —— 后端依赖（Python 3.12 实测通过）
+#
+# 安装：
+#   python -m venv venv
+#   venv\Scripts\python.exe -m pip install -r requirements.txt
+#
+# ⚠️ 只装下面这一个 chromadb，不要再另外安装 chromadb-client！
+#    两者共用同一个 chromadb/ 目录，chromadb-client 会写进
+#    chromadb/is_thin_client.py，使完整的 chromadb 误判自己是瘦客户端，
+#    PersistentClient 直接抛 "Chroma is running in http-only client mode"，
+#    整个后端在 import 阶段就会崩掉、根本起不来。
+#    一旦装错了，删掉 venv/Lib/site-packages/chromadb/is_thin_client.py 即可恢复。
+
+# ---- Web 框架与服务器 ----
+fastapi==0.142.4
+uvicorn==0.54.0
+python-multipart==0.0.32        # FastAPI 解析文件上传（UploadFile）必需
+
+# ---- 数据处理 ----
+pandas==3.0.6
+numpy==2.5.3
+openpyxl==3.1.5                 # 读取 .xlsx
+chardet==7.6.0                  # 自动探测 CSV 编码（GBK / UTF-8）
+
+# ---- 大模型调用 ----
+requests==2.34.2
+python-dotenv==1.2.4
+
+# ---- RAG 知识库 ----
+chromadb==1.5.9
+onnxruntime==1.30.0             # Chroma 内置嵌入函数 DefaultEmbeddingFunction 依赖
+pypdf==6.19.0                   # 解析 PDF
+python-docx==1.2.0              # 解析 Word
+
+# ---- 数据模型 ----
+pydantic==2.13.5
