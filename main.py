@@ -13,6 +13,16 @@ from pypdf import PdfReader
 from docx import Document
 from pydantic import BaseModel
 from dotenv import load_dotenv
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+# 把嵌入模型缓存放进项目目录，而不是用户目录 ~/.cache/chroma
+# （受限环境下用户目录不可写；放项目里也让整个项目自成一体）
+from pathlib import Path
+from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ONNXMiniLM_L6_V2.DOWNLOAD_PATH = (
+    Path(BASE_DIR) / "models" / "onnx_models" / ONNXMiniLM_L6_V2.MODEL_NAME
+)
 
 # ==================== 基础配置 ====================
 load_dotenv()
@@ -447,39 +457,16 @@ def kb_unavailable():
 
 
 def split_text(text, chunk_size=500, chunk_overlap=50):
-    """原生文本切片，保留上下文重叠"""
-    chunks = []
-    text_len = len(text)
-    if text_len == 0:
-        return chunks
-    if chunk_overlap >= chunk_size:
-        chunk_overlap = chunk_size // 5
-
-    start = 0
-    separators = ["\n\n", "\n", "。", "！", "？", " ", ""]
-
-    while start < text_len:
-        end = min(start + chunk_size, text_len)
-        for sep in separators:
-            pos = text.rfind(sep, start, end)
-            if pos != -1 and pos > start:
-                end = pos + len(sep)
-                break
-
-        chunk = text[start:end].strip()
-        if chunk:
-            chunks.append(chunk)
-
-        # 已经切到文末，收工
-        if end >= text_len:
-            break
-
-        # 保底前进：否则当 end 被夹在同一个分隔符上时 start 会原地打转，
-        # 导致 while 永远退不出来（原来的死循环就在这里）
-        next_start = end - chunk_overlap
-        start = next_start if next_start > start else end
-
-    return chunks
+    """文本切片（LangChain RecursiveCharacterTextSplitter 实现）"""
+    if not text:
+        return []
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+        length_function=len,
+        separators=["\n\n", "\n", "。", "！", "？", " ", ""],
+    )
+    return splitter.split_text(text)
 
 
 # ==================== RAG接口：文档上传入库 ====================
