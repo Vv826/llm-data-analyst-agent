@@ -9,7 +9,7 @@ import os
 import requests
 import tempfile
 from pypdf import PdfReader
-from docx import Document
+from docx import Document as DocxDocument
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -533,7 +533,7 @@ def rag_upload(file: UploadFile = File(...)):
             for page in reader.pages:
                 text += page.extract_text() + "\n\n"
         elif suffix == ".docx":
-            doc = Document(tmp_path)
+            doc = DocxDocument(tmp_path)      
             for para in doc.paragraphs:
                 text += para.text + "\n"
         elif suffix in [".txt", ".md", ".csv"]:
@@ -585,11 +585,13 @@ class RagChatRequest(BaseModel):
 
 _rag_system_prompt = (
     "你是知识库问答助手。\n"
-    "1. 当用户的问题需要查阅知识库时，先调用 search_knowledge_base 检索，"
-    "并严格基于检索到的内容回答，不要编造；知识库里没有就如实说明。\n"
-    "2. 如果用户是在追问或指代之前对话里的内容（如“刚才那个”“第一条”），"
-    "直接结合上下文回答即可。\n"
-    "3. 回答用中文。\n"
+    "1. 知识库里已经上传了文档。用户问“这份文档/这份文件/这个项目讲了什么”时，"
+    "“这份/这个”指的就是知识库里的文档，必须直接调用 search_knowledge_base 检索，"
+    "然后基于检索结果回答；不要反问“是哪份文档”。\n"
+    "2. 只要问题涉及知识库内容，都先检索，再严格基于检索结果回答，不要编造。\n"
+    "3. 检索结果确实与问题无关时，再如实说明知识库里没有相关内容。\n"
+    "4. 只有用户明确询问对话本身（如“我刚才问的是什么”）时才不检索，直接结合上下文回答。\n"
+    "5. 回答用中文。\n"
 )
 
 
