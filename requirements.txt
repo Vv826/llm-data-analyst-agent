@@ -34,3 +34,11 @@ python-docx==1.2.0              # 解析 Word
 
 # ---- 数据模型 ----
 pydantic==2.13.5
+
+# ---- LangChain / LangGraph（Agent 与 RAG 编排）----
+langchain==1.4.4
+langchain-core==1.6.9
+langchain-openai==1.7.0            # ChatOpenAI，对接火山方舟 OpenAI 兼容接口
+langchain-text-splitters==1.1.3    # RecursiveCharacterTextSplitter
+langchain-chroma==1.1.0            # Chroma 向量库集成
+langgraph==1.2.14                  # create_agent 的运行时 + checkpointer
