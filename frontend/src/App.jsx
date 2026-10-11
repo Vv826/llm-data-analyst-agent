@@ -12,6 +12,7 @@ import {
   Tabs,
   Alert,
   Skeleton,
+  Segmented,
 } from 'antd'
 import {
   InboxOutlined,
@@ -27,6 +28,7 @@ import {
 } from '@ant-design/icons'
 import axios from 'axios'
 import ReactECharts from 'echarts-for-react'
+import RagPanel from './RagPanel'
 import './App.css'
 
 const { TextArea } = Input
@@ -92,6 +94,7 @@ function App() {
   const [question, setQuestion] = useState('')
   const [analyzeResult, setAnalyzeResult] = useState(null)
   const [loading, setLoading] = useState(false)
+  const [mode, setMode] = useState('data')
 
   // 上传文件
   const handleUpload = async (file) => {
@@ -343,9 +346,21 @@ function App() {
               <span className="hero-step"><i className="step-index">4</i> 查看结果</span>
             </div>
           </div>
-        </header>
+                </header>
 
-        <div className="layout">
+        <div className="mode-switch">
+          <Segmented
+            size="large"
+            value={mode}
+            onChange={setMode}
+            options={[
+              { label: '数据分析', value: 'data' },
+              { label: '知识库问答', value: 'rag' },
+            ]}
+          />
+        </div>
+
+        <div className="layout" style={{ display: mode === 'data' ? undefined : 'none' }}>
           {/* ================= 左栏：数据 ================= */}
           <div className="col">
             <Card
@@ -600,10 +615,11 @@ function App() {
               </Card>
             )}
           </div>
-        </div>
+                </div>
+
+        {mode === 'rag' && <RagPanel />}
       </main>
     </div>
   )
 }
-
 export default App
