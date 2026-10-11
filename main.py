@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 # 把嵌入模型缓存放进项目目录，而不是用户目录 ~/.cache/chroma
 # （受限环境下用户目录不可写；放项目里也让整个项目自成一体）
+from langchain_openai import ChatOpenAI
 from pathlib import Path
 from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
@@ -167,28 +168,35 @@ def read_text_auto(file_path):
     except (LookupError, UnicodeDecodeError):
         return raw.decode('utf-8', errors='ignore')
 
+# 模块级缓存：ChatModel 只创建一次，复用底层 HTTP 连接池
+_llm = None
+
+
+def get_llm():
+    """懒加载大模型客户端（LangChain ChatOpenAI，对接火山方舟 OpenAI 兼容接口）"""
+    global _llm
+    if _llm is None:
+        api_key = os.getenv("ARK_API_KEY")
+        if not api_key:
+            raise RuntimeError("未配置 ARK_API_KEY，请在项目根目录的 .env 中填写后重启后端")
+        _llm = ChatOpenAI(
+            model=os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt"),
+            api_key=api_key,
+            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            temperature=0.1,
+            timeout=120,
+            max_retries=2,
+        )
+    return _llm
+
 
 def call_ai(prompt: str):
     """调用豆包聊天大模型"""
-    api_key = os.getenv("ARK_API_KEY")
-    if not api_key:
-        raise RuntimeError("未配置 ARK_API_KEY，请在项目根目录的 .env 中填写后重启后端")
-
-    url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
-
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json"
-    }
-
-    data = {
-        "model": os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt"),
-        "messages": [
-            {"role": "system", "content": "你是一个数据分析专家，严格按照要求的格式输出。"},
-            {"role": "user", "content": prompt}
-        ],
-        "temperature": 0.1
-    }
+    try:
+        response = get_llm().invoke(prompt)
+    except Exception as e:
+        raise RuntimeError(f"调用大模型失败：{str(e)[:200]}")
+    return response.content
 
     try:
         # (连接超时, 读取超时)：上游不响应时不至于把请求永久挂住
