@@ -5,48 +5,65 @@ import zhCN from 'antd/locale/zh_CN'
 import './index.css'
 import App from './App.jsx'
 
-// 统一视觉风格：主色、圆角、字体、组件细节（仅主题层，不影响业务逻辑）
+// 统一视觉风格：黑白灰单色主题（仅主题层，不影响业务逻辑）
 const theme = {
   token: {
-    colorPrimary: '#6366f1',
-    colorInfo: '#6366f1',
-    colorLink: '#6366f1',
-    colorTextHeading: '#0f172a',
-    colorText: '#334155',
-    colorBorderSecondary: '#f1f3f9',
-    borderRadius: 12,
+    colorPrimary: '#18181b',
+    colorInfo: '#18181b',
+    colorLink: '#18181b',
+    colorLinkHover: '#3f3f46',
+    colorTextHeading: '#18181b',
+    colorText: '#3f3f46',
+    colorTextSecondary: '#71717a',
+    colorTextTertiary: '#a1a1aa',
+    colorBorder: '#e4e4e7',
+    colorBorderSecondary: '#f4f4f5',
+    borderRadius: 10,
     fontSize: 14,
     fontFamily:
       "-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif",
-    boxShadowTertiary:
-      '0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 26px -16px rgba(15, 23, 42, 0.18)',
+    boxShadowTertiary: '0 1px 2px rgba(0, 0, 0, 0.04)',
   },
   components: {
     Card: {
-      borderRadiusLG: 18,
-      paddingLG: 22,
+      borderRadiusLG: 12,
+      paddingLG: 20,
       headerFontSize: 15,
+      headerBg: 'transparent',
     },
     Table: {
-      headerBg: '#f8f9fe',
-      headerColor: '#475069',
+      headerBg: '#fafafa',
+      headerColor: '#52525b',
       headerSplitColor: 'transparent',
-      borderColor: '#f1f3f9',
-      rowHoverBg: '#f8f9ff',
+      borderColor: '#f4f4f5',
+      rowHoverBg: '#fafafa',
     },
     Button: {
       fontWeight: 500,
+      primaryShadow: 'none',
+    },
+    Segmented: {
+      trackBg: '#f4f4f5',
+      itemSelectedBg: '#18181b',
+      itemSelectedColor: '#ffffff',
+      itemHoverBg: '#e4e4e7',
     },
     Tabs: {
-      itemSelectedColor: '#4f46e5',
-      inkBarColor: '#4f46e5',
+      itemSelectedColor: '#18181b',
+      itemHoverColor: '#18181b',
+      inkBarColor: '#18181b',
       horizontalItemGutter: 24,
     },
     Progress: {
-      defaultColor: '#6366f1',
+      defaultColor: '#18181b',
+      remainingColor: '#f4f4f5',
     },
     Empty: {
-      colorTextDescription: '#94a3b8',
+      colorTextDescription: '#a1a1aa',
+    },
+    Tag: {
+      defaultBg: '#f4f4f5',
+      defaultColor: '#52525b',
     },
   },
 }

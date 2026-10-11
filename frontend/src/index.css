@@ -1,29 +1,28 @@
 /* ============================================================
-   全局基础样式 / 设计变量
+   全局基础样式 / 设计变量 —— 黑白灰单色主题
    ============================================================ */
 :root {
-  /* 品牌色 */
-  --brand: #6366f1;
-  --brand-deep: #4f46e5;
-  --brand-violet: #8b5cf6;
-  --brand-cyan: #06b6d4;
-
-  /* 文字 */
-  --ink-900: #0f172a;
-  --ink-700: #334155;
-  --ink-500: #64748b;
-  --ink-400: #94a3b8;
+  /* 单色阶：近黑 → 近白 */
+  --ink-900: #18181b; /* 标题 / 强调 */
+  --ink-700: #3f3f46; /* 正文 */
+  --ink-500: #71717a; /* 次要文字 */
+  --ink-400: #a1a1aa; /* 提示文字 */
 
   /* 结构 */
-  --line: #e8eaf3;
-  --line-soft: #f1f3f9;
-  --card-bg: #ffffff;
-  --radius-lg: 18px;
-  --radius-md: 14px;
+  --line: #e4e4e7;
+  --line-soft: #f4f4f5;
+  --surface: #ffffff;
+  --surface-sunken: #fafafa;
 
-  /* 阴影 */
-  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.04), 0 10px 26px -16px rgba(15, 23, 42, 0.18);
-  --shadow-md: 0 22px 44px -26px rgba(49, 46, 129, 0.42);
+  /* 强调色就是黑本身；全局唯一的语义色是"危险红"，只用于数据异常提示 */
+  --accent: #18181b;
+  --danger: #dc2626;
+
+  --radius-lg: 12px;
+  --radius-md: 10px;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-md: 0 8px 24px -16px rgba(0, 0, 0, 0.18);
 
   --font-sans: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
     'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
@@ -49,12 +48,7 @@ body {
   font-size: 14px;
   line-height: 1.6;
   color: var(--ink-700);
-  background-color: #f5f6fc;
-  background-image:
-    radial-gradient(1000px 520px at 8% -10%, rgba(99, 102, 241, 0.14), transparent 62%),
-    radial-gradient(900px 520px at 98% 2%, rgba(6, 182, 212, 0.12), transparent 60%),
-    radial-gradient(900px 700px at 70% 108%, rgba(139, 92, 246, 0.1), transparent 66%);
-  background-attachment: fixed;
+  background: var(--surface-sunken);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -67,11 +61,11 @@ body {
 }
 
 ::selection {
-  background: rgba(99, 102, 241, 0.2);
+  background: #e4e4e7;
   color: var(--ink-900);
 }
 
-/* 细滚动条 */
+/* 细滚动条（单色） */
 ::-webkit-scrollbar {
   width: 9px;
   height: 9px;
@@ -80,12 +74,12 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(100, 116, 139, 0.28);
+  background: rgba(24, 24, 27, 0.18);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(100, 116, 139, 0.45);
+  background: rgba(24, 24, 27, 0.32);
   background-clip: content-box;
 }

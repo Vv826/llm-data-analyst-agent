@@ -33,15 +33,15 @@ import './App.css'
 
 const { TextArea } = Input
 
-// 图表配色（仅视觉层）
+// 图表配色（黑白灰：靠深浅区分序列）
 const PALETTE = [
-  '#6366f1',
-  '#8b5cf6',
-  '#06b6d4',
-  '#f59e0b',
-  '#ef4444',
-  '#10b981',
-  '#ec4899',
+  '#18181b',
+  '#3f3f46',
+  '#52525b',
+  '#71717a',
+  '#a1a1aa',
+  '#c4c4c8',
+  '#e4e4e7',
 ]
 
 // 提问示例（仅 UI 辅助，点击后填入输入框）
@@ -60,7 +60,7 @@ function ToolHistory({ items }) {
     return (
       <Empty
         image={Empty.PRESENTED_IMAGE_SIMPLE}
-        description={<span style={{ color: '#94a3b8', fontSize: 13 }}>本次没有调用任何工具</span>}
+        description={<span style={{ color: '#a1a1aa', fontSize: 13 }}>本次没有调用任何工具</span>}
       />
     )
   }
@@ -69,17 +69,17 @@ function ToolHistory({ items }) {
       {items.map((item, index) => (
         <div className="history-item" key={index}>
           <div className="history-head">
-            <Tag color="blue" style={{ margin: 0 }}>第 {item.step} 步</Tag>
-            <Tag color="purple" style={{ margin: 0 }}>{item.action}</Tag>
+            <Tag style={{ margin: 0 }}>第 {item.step} 步</Tag>
+            <Tag className="col-tag" style={{ margin: 0 }}>{item.action}</Tag>
           </div>
           {item.thought ? (
             <p className="history-line">
-              <span className="history-key" style={{ color: '#6366f1' }}>思考：</span>
+              <span className="history-key" style={{ color: '#18181b' }}>思考：</span>
               {item.thought}
             </p>
           ) : null}
           <p className="history-line">
-            <span className="history-key" style={{ color: '#10b981' }}>参数：</span>
+            <span className="history-key" style={{ color: '#71717a' }}>参数：</span>
             <code className="history-code">{JSON.stringify(item.input)}</code>
           </p>
         </div>
@@ -203,9 +203,9 @@ function App() {
     }
 
     const axisStyle = {
-      axisLine: { lineStyle: { color: '#e2e5f0' } },
+      axisLine: { lineStyle: { color: '#e4e4e7' } },
       axisTick: { show: false },
-      axisLabel: { color: '#64748b', fontSize: 11.5 },
+      axisLabel: { color: '#71717a', fontSize: 11.5 },
     }
 
     const commonOption = {
@@ -213,13 +213,13 @@ function App() {
       grid: { left: 12, right: 20, top: 34, bottom: 8, containLabel: true },
       tooltip: {
         trigger: 'axis',
-        backgroundColor: 'rgba(15, 23, 42, 0.92)',
+        backgroundColor: 'rgba(24, 24, 27, 0.92)',
         borderWidth: 0,
         padding: [8, 12],
-        textStyle: { color: '#f1f5f9', fontSize: 12.5 },
+        textStyle: { color: '#fafafa', fontSize: 12.5 },
         axisPointer: {
           type: 'shadow',
-          shadowStyle: { color: 'rgba(99, 102, 241, 0.08)' },
+          shadowStyle: { color: 'rgba(24, 24, 27, 0.06)' },
         },
       },
       xAxis: {
@@ -231,7 +231,7 @@ function App() {
       yAxis: {
         type: 'value',
         ...axisStyle,
-        splitLine: { lineStyle: { color: '#f1f3f9', type: 'dashed' } },
+        splitLine: { lineStyle: { color: '#f4f4f5', type: 'dashed' } },
       },
     }
 
@@ -243,39 +243,29 @@ function App() {
             type: 'bar',
             data: yData,
             barMaxWidth: 38,
-            itemStyle: {
-              borderRadius: [8, 8, 0, 0],
-              color: {
-                type: 'linear',
-                x: 0, y: 0, x2: 0, y2: 1,
-                colorStops: [
-                  { offset: 0, color: '#8b5cf6' },
-                  { offset: 1, color: '#6366f1' },
-                ],
-              },
-            },
-            emphasis: { itemStyle: { color: '#4f46e5' } },
+            itemStyle: { borderRadius: [6, 6, 0, 0], color: '#18181b' },
+            emphasis: { itemStyle: { color: '#3f3f46' } },
           }]
         }
       case 'line':
         return {
           ...commonOption,
-          tooltip: { ...commonOption.tooltip, axisPointer: { type: 'line', lineStyle: { color: '#6366f1', type: 'dashed' } } },
+          tooltip: { ...commonOption.tooltip, axisPointer: { type: 'line', lineStyle: { color: '#a1a1aa', type: 'dashed' } } },
           series: [{
             type: 'line',
             data: yData,
             smooth: true,
             symbol: 'circle',
-            symbolSize: 8,
-            lineStyle: { width: 3, color: '#6366f1' },
-            itemStyle: { color: '#6366f1', borderColor: '#fff', borderWidth: 2 },
+            symbolSize: 7,
+            lineStyle: { width: 2.5, color: '#18181b' },
+            itemStyle: { color: '#18181b', borderColor: '#fff', borderWidth: 2 },
             areaStyle: {
               color: {
                 type: 'linear',
                 x: 0, y: 0, x2: 0, y2: 1,
                 colorStops: [
-                  { offset: 0, color: 'rgba(99, 102, 241, 0.32)' },
-                  { offset: 1, color: 'rgba(99, 102, 241, 0.02)' },
+                  { offset: 0, color: 'rgba(24, 24, 27, 0.16)' },
+                  { offset: 1, color: 'rgba(24, 24, 27, 0.01)' },
                 ],
               },
             },
@@ -286,26 +276,26 @@ function App() {
           color: PALETTE,
           tooltip: {
             trigger: 'item',
-            backgroundColor: 'rgba(15, 23, 42, 0.92)',
+            backgroundColor: 'rgba(24, 24, 27, 0.92)',
             borderWidth: 0,
             padding: [8, 12],
-            textStyle: { color: '#f1f5f9', fontSize: 12.5 },
+            textStyle: { color: '#fafafa', fontSize: 12.5 },
           },
           legend: {
             bottom: 0,
             icon: 'circle',
             itemWidth: 9,
             itemHeight: 9,
-            textStyle: { color: '#64748b', fontSize: 12 },
+            textStyle: { color: '#71717a', fontSize: 12 },
           },
           series: [{
             type: 'pie',
             radius: ['46%', '68%'],
             center: ['50%', '44%'],
             avoidLabelOverlap: true,
-            itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 6 },
-            label: { color: '#475069', fontSize: 12, formatter: '{b}\n{d}%' },
-            labelLine: { length: 10, length2: 12, lineStyle: { color: '#cbd5e1' } },
+            itemStyle: { borderColor: '#fff', borderWidth: 2, borderRadius: 4 },
+            label: { color: '#3f3f46', fontSize: 12, formatter: '{b}\n{d}%' },
+            labelLine: { length: 10, length2: 12, lineStyle: { color: '#d4d4d8' } },
             data: xData.map((name, i) => ({ name, value: yData[i] })),
           }]
         }
@@ -318,21 +308,18 @@ function App() {
   }
 
 
-  // 缺失率配色
+  // 缺失率配色（黑白灰：越深表示缺失越多）
   const rateColor = (rate) => {
-    if (!rate) return '#10b981'
-    if (rate < 5) return '#f59e0b'
-    return '#ef4444'
+    if (!rate) return '#e4e4e7'
+    if (rate < 5) return '#a1a1aa'
+    return '#52525b'
   }
 
   return (
     <div className="app-shell">
-      <div className="app-bg" aria-hidden="true" />
       <main className="app-main">
         {/* 顶部横幅 */}
         <header className="hero rise">
-          <span className="hero-glow hero-glow-1" aria-hidden="true" />
-          <span className="hero-glow hero-glow-2" aria-hidden="true" />
           <div className="hero-content">
             <span className="hero-badge">
               <ThunderboltOutlined /> 大模型驱动 · 智能体分析引擎
@@ -346,7 +333,7 @@ function App() {
               <span className="hero-step"><i className="step-index">4</i> 查看结果</span>
             </div>
           </div>
-                </header>
+        </header>
 
         <div className="mode-switch">
           <Segmented
@@ -388,7 +375,7 @@ function App() {
               <Card
                 className="panel rise"
                 title={<span className="panel-title"><DatabaseOutlined />数据质量报告</span>}
-                extra={<Tag color="green" style={{ margin: 0 }}>已就绪</Tag>}
+                extra={<Tag style={{ margin: 0 }}>已就绪</Tag>}
               >
                 <div className="stat-grid">
                   <div className="stat-card">
@@ -399,14 +386,14 @@ function App() {
                     </div>
                   </div>
                   <div className="stat-card">
-                    <span className="stat-icon is-cyan"><TableOutlined /></span>
+                    <span className="stat-icon"><TableOutlined /></span>
                     <div className="stat-body">
                       <div className="stat-label">数据行数</div>
                       <div className="stat-value">{dataQuality.rows}</div>
                     </div>
                   </div>
                   <div className="stat-card">
-                    <span className="stat-icon is-violet"><DatabaseOutlined /></span>
+                    <span className="stat-icon"><DatabaseOutlined /></span>
                     <div className="stat-body">
                       <div className="stat-label">数据列数</div>
                       <div className="stat-value">{dataQuality.columns}</div>
@@ -437,6 +424,7 @@ function App() {
                       width: 168,
                       render: (value) => {
                         const rate = parseFloat(value) || 0
+                        const severe = rate >= 5
                         return (
                           <div className="rate-cell">
                             <Progress
@@ -444,9 +432,15 @@ function App() {
                               size="small"
                               showInfo={false}
                               strokeColor={rateColor(rate)}
-                              trailColor="#eef0f7"
+                              trailColor="#f4f4f5"
                             />
-                            <span className="rate-text">{value}</span>
+                            <span
+                              className={`rate-text${severe ? ' is-severe' : ''}`}
+                              title={severe ? '缺失率 ≥ 5%，建议关注' : undefined}
+                            >
+                              {severe && <i className="rate-dot" />}
+                              {value}
+                            </span>
                           </div>
                         )
                       },
@@ -535,9 +529,9 @@ function App() {
                 <Card
                   className="panel rise"
                   title={<span className="panel-title"><ThunderboltOutlined />分析结论</span>}
-                  extra={<Tag color="geekblue" style={{ margin: 0 }}>共 {analyzeResult.steps} 步</Tag>}
+                  extra={<Tag style={{ margin: 0 }}>共 {analyzeResult.steps} 步</Tag>}
                 >
-                  <p style={{ fontSize: 15, lineHeight: 1.8, margin: 0, color: '#1e293b' }}>
+                  <p style={{ fontSize: 15, lineHeight: 1.8, margin: 0, color: '#27272a' }}>
                     {analyzeResult.final_answer}
                   </p>
                 </Card>
@@ -548,7 +542,7 @@ function App() {
                     className="panel rise"
                     title={<span className="panel-title"><ThunderboltOutlined />可视化图表</span>}
                     extra={
-                      <Tag color="geekblue" style={{ margin: 0 }}>
+                      <Tag style={{ margin: 0 }}>
                         {CHART_LABELS[analyzeResult.chart?.type] || '图表'}
                       </Tag>
                     }
@@ -606,7 +600,7 @@ function App() {
                   <Empty
                     image={Empty.PRESENTED_IMAGE_SIMPLE}
                     description={
-                      <span style={{ color: '#94a3b8', fontSize: 13 }}>
+                      <span style={{ color: '#a1a1aa', fontSize: 13 }}>
                         上传数据并提问后，这里会展示图表与分析结果
                       </span>
                     }
@@ -615,11 +609,12 @@ function App() {
               </Card>
             )}
           </div>
-                </div>
+        </div>
 
         {mode === 'rag' && <RagPanel />}
       </main>
     </div>
   )
 }
+
 export default App
