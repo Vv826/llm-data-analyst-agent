@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Upload, Button, Input, Card, Tag, Empty, Spin, message } from 'antd'
+import { Upload, Button, Input, Card, Tag, Empty, Spin, message, Select } from 'antd'
 import {
   InboxOutlined,
   SendOutlined,
@@ -22,7 +22,24 @@ export default function RagPanel() {
   const [asking, setAsking] = useState(false)
   const [messages, setMessages] = useState([])    // { role, content, docs }
   const [sessionId, setSessionId] = useState(() => `s-${Date.now()}`)
+  const [documents, setDocuments] = useState([]) // 知识库已有文档 [{ source, chunks }]
+  const [scope, setScope] = useState('all')      // 检索范围：'all' 或某个文档名
   const listRef = useRef(null)
+
+  // 读取知识库里已有的文档（供"检索范围"下拉框使用）
+  const loadDocuments = async () => {
+    try {
+      const res = await axios.get(`${API}/rag/documents`)
+      if (res.data?.success) setDocuments(res.data.documents || [])
+    } catch {
+      // 拉取失败不影响上传与问答
+    }
+  }
+
+  useEffect(() => {
+    loadDocuments()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   // 有新消息时自动滚到底部
   useEffect(() => {
@@ -42,6 +59,9 @@ export default function RagPanel() {
         return false
       }
       setDoc({ filename: res.data.filename, chunks: res.data.chunks })
+      // 刚上传的文档自动成为检索范围，符合"上传后就问它"的直觉
+      setScope(res.data.filename)
+      loadDocuments()
       message.success(`已入库：${res.data.chunks} 个片段`)
     } catch (err) {
       message.error('上传失败：' + (err?.response?.data?.error || err?.message || '请确认后端已启动'))
@@ -64,7 +84,11 @@ export default function RagPanel() {
     setQuestion('')
     setAsking(true)
     try {
-      const res = await axios.post(`${API}/rag/chat`, { question: q, session_id: sessionId })
+      const res = await axios.post(`${API}/rag/chat`, {
+        question: q,
+        session_id: sessionId,
+        source: scope === 'all' ? null : scope,
+      })
       if (res.data?.success === false) {
         setMessages((prev) => [...prev, { role: 'assistant', content: '出错了：' + res.data.error, docs: [] }])
       } else {
@@ -101,7 +125,7 @@ export default function RagPanel() {
         <Card
           className="panel rise"
           title={<span className="panel-title"><FileTextOutlined />知识库文档</span>}
-          extra={<Tag color="geekblue" style={{ margin: 0 }}>PDF · Word · TXT</Tag>}
+          extra={<Tag style={{ margin: 0 }}>PDF · Word · TXT</Tag>}
         >
           <div className="upload-zone">
             <Upload.Dragger
@@ -120,9 +144,9 @@ export default function RagPanel() {
 
           {doc && (
             <div className="doc-info">
-              <FileTextOutlined style={{ color: '#6366f1' }} />
+              <FileTextOutlined style={{ color: '#18181b' }} />
               <span>{doc.filename}</span>
-              <Tag color="green" style={{ marginLeft: 'auto', marginRight: 0 }}>
+              <Tag style={{ marginLeft: 'auto', marginRight: 0 }}>
                 {doc.chunks} 个片段
               </Tag>
             </div>
@@ -154,13 +178,32 @@ export default function RagPanel() {
             </Button>
           }
         >
+          <div className="chat-scope">
+            <span className="chat-scope-label">检索范围</span>
+            <Select
+              size="small"
+              value={scope}
+              onChange={setScope}
+              options={[
+                {
+                  label: `全部文档（${documents.reduce((sum, d) => sum + d.chunks, 0)} 个片段）`,
+                  value: 'all',
+                },
+                ...documents.map((d) => ({
+                  label: `${d.source}（${d.chunks} 个片段）`,
+                  value: d.source,
+                })),
+              ]}
+            />
+          </div>
+
           <div className="chat-list" ref={listRef}>
             {messages.length === 0 && !asking && (
               <div className="chat-empty">
                 <Empty
                   image={Empty.PRESENTED_IMAGE_SIMPLE}
                   description={
-                    <span style={{ color: '#94a3b8', fontSize: 13 }}>
+                    <span style={{ color: '#a1a1aa', fontSize: 13 }}>
                       上传文档后，在这里向知识库提问
                     </span>
                   }

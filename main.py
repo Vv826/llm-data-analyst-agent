@@ -488,10 +488,8 @@ try:
         embedding_function=ChromaONNXEmbeddings(),
         persist_directory=CHROMA_PATH,
     )
-    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 except Exception as e:
     vectorstore = None
-    retriever = None
     _kb_init_error = str(e)
 
 # 会话记忆：必须放在模块级，跨请求共享，否则每次请求都"失忆"
@@ -563,13 +561,7 @@ def rag_upload(file: UploadFile = File(...)):
         }
 
     except Exception as e:
-        msg = str(e)
-        low = msg.lower()
-        if (isinstance(e, PermissionError) or ".cache" in msg
-                or "timeout" in low or "timed out" in low or "onnx" in low or "download" in low):
-            msg += ("（Chroma 首次使用需要把约 80MB 的嵌入模型下载到用户目录 ~/.cache/chroma，"
-                    "需保证该目录可写且能联网；网络慢时可能超时，重试一次即可）")
-        return {"success": False, "error": msg}
+        return {"success": False, "error": str(e)}
     finally:
         if 'tmp_path' in dir():
             try:
@@ -578,18 +570,45 @@ def rag_upload(file: UploadFile = File(...)):
                 pass
 
 
+# ==================== RAG接口：列出知识库文档 ====================
+@app.get("/rag/documents")
+def rag_documents():
+    """列出知识库里已有的文档（按来源聚合片段数）"""
+    if vectorstore is None:
+        return kb_unavailable()
+    try:
+        data = vectorstore.get()
+        counts = {}
+        for meta in data.get("metadatas") or []:
+            src = (meta or {}).get("source")
+            if src:
+                counts[src] = counts.get(src, 0) + 1
+        docs = [{"source": s, "chunks": n} for s, n in sorted(counts.items())]
+        return {
+            "success": True,
+            "documents": docs,
+            "total_chunks": sum(counts.values()),
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
 class RagChatRequest(BaseModel):
     question: str
     session_id: str = "default"
+    # 限定只在某个文档里检索；None 表示在整个知识库检索
+    source: str | None = None
 
 
 _rag_system_prompt = (
     "你是知识库问答助手。\n"
     "1. 知识库里已经上传了文档。用户问“这份文档/这份文件/这个项目讲了什么”时，"
-    "“这份/这个”指的就是知识库里的文档，必须直接调用 search_knowledge_base 检索，"
-    "然后基于检索结果回答；不要反问“是哪份文档”。\n"
+    "“这份/这个”指的就是知识库里的文档（若系统限定了检索范围，就是那份文档），"
+    "必须直接调用 search_knowledge_base 检索，然后基于检索结果回答；不要反问“是哪份文档”。\n"
     "2. 只要问题涉及知识库内容，都先检索，再严格基于检索结果回答，不要编造。\n"
-    "3. 检索结果确实与问题无关时，再如实说明知识库里没有相关内容。\n"
+    "3. 检索到的资料必须与问题主题相关才可使用。如果检索结果与用户问的主题**无关**"
+    "（例如问的是 A 主题、检索到的却是 B 主题的资料），直接回答“知识库中没有与 XXX 相关的内容”，"
+    "**绝不能用无关资料拼凑答案**。\n"
     "4. 只有用户明确询问对话本身（如“我刚才问的是什么”）时才不检索，直接结合上下文回答。\n"
     "5. 回答用中文。\n"
 )
@@ -597,12 +616,19 @@ _rag_system_prompt = (
 
 @app.post("/rag/chat")
 def rag_chat(req: RagChatRequest):
-    if retriever is None:
+    if vectorstore is None:
         return kb_unavailable()
     try:
         # 知识库为空时先给友好提示，省掉两次模型调用
         if vectorstore._collection.count() == 0:
             return {"success": False, "error": "知识库还是空的，请先上传文档"}
+
+        # 按需限定检索范围：指定文档时只在该文档的片段里检索，
+        # 从根本上避免"问 A 文档却答成 B 文档"
+        search_kwargs = {"k": 3}
+        if req.source:
+            search_kwargs["filter"] = {"source": req.source}
+        retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
 
         collected = {"docs": []}
 
