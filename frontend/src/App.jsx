@@ -70,10 +70,12 @@ function ToolHistory({ items }) {
             <Tag color="blue" style={{ margin: 0 }}>第 {item.step} 步</Tag>
             <Tag color="purple" style={{ margin: 0 }}>{item.action}</Tag>
           </div>
-          <p className="history-line">
-            <span className="history-key" style={{ color: '#6366f1' }}>思考：</span>
-            {item.thought}
-          </p>
+          {item.thought ? (
+            <p className="history-line">
+              <span className="history-key" style={{ color: '#6366f1' }}>思考：</span>
+              {item.thought}
+            </p>
+          ) : null}
           <p className="history-line">
             <span className="history-key" style={{ color: '#10b981' }}>参数：</span>
             <code className="history-code">{JSON.stringify(item.input)}</code>

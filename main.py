@@ -18,6 +18,8 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # （受限环境下用户目录不可写；放项目里也让整个项目自成一体）
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
+from langchain.agents import create_agent
+from langchain_core.messages import AIMessage
 from pathlib import Path
 from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
@@ -305,39 +307,31 @@ def tool_sort(df, column, ascending=True):
     text = f"排序结果（按{column}，升序={ascending}）：\n前20行：\n{sorted_df.head(20).to_string()}"
     return text, data
 
+def derive_chart(action, args, data):
+    """从最后一次工具调用推导图表配置。
+
+    比"让模型自己猜 x/y 字段"可靠：工具参数里本来就有真实的列名。
+    返回 None 时前端会自动隐藏图表卡片。
+    """
+    if action == "group_agg":
+        return {"type": "bar", "x_field": args.get("group_col"), "y_field": args.get("agg_col")}
+
+    if action in ("filter", "sort") and isinstance(data, list) and data:
+        keys = list(data[0].keys())
+        x_field = keys[0]
+        y_field = next(
+            (k for k in keys
+             if isinstance(data[0].get(k), (int, float)) and not isinstance(data[0].get(k), bool)),
+            keys[-1],
+        )
+        return {"type": "bar", "x_field": x_field, "y_field": y_field}
+
+    # get_overview / get_stats 是元信息和统计量，画图没有意义
+    return None
 
 # ==================== Agent数据分析接口 ====================
 @app.post("/analyze")
 def analyze_data(filename: str, question: str):
-    system_prompt = """
-你是专业的数据分析智能体，你可以通过调用工具来完成用户的数据分析任务。
-## 可用工具列表
-1. get_overview：获取数据概览，包括行数、列数、列名、数据类型
-   参数：无
-2. get_stats：获取数值列的统计量（均值、中位数、最大值、最小值、标准差）
-   参数：columns（列表，要统计的列名）
-3. group_agg：按某列分组，对另一列做聚合计算
-   参数：group_col（分组列名）、agg_col（聚合列名）、method（聚合方法，可选mean/sum/count/max/min）
-4. filter：按条件过滤数据
-   参数：column（列名）、operator（运算符，可选> < == >= <= !=）、value（对比值）
-5. sort：按指定列排序
-   参数：column（列名）、ascending（布尔值，True升序False降序）
-## 执行规则
-1. 先思考用户的需求，拆解成分析步骤，再逐步调用工具
-2. 每次只调用一个工具，拿到结果后再决定下一步
-3. 如果数据结构不明确，先调用get_overview了解数据
-4. 不要自己编造数据，所有结论必须基于工具返回的结果
-5. 任务完成后，给出最终结论，同时判断最适合的图表类型
-## 输出格式要求
-严格以JSON格式输出，不要任何其他文字、markdown、解释，必须包含以下字段：
-- thought：你的思考过程，分析下一步该做什么
-- action：要调用的工具名，任务完成则填"finish"
-- action_input：工具参数字典，不需要参数则填{}
-- is_finish：布尔值，任务完成填true，否则填false
-- final_answer：任务完成时填写最终结论文字
-- chart：任务完成时填写，包含type（图表类型bar/line/pie）、x_field、y_field
-"""
-
     file_path = os.path.join(UPLOAD_DIR, safe_filename(filename))
     if not os.path.exists(file_path):
         return {"success": False, "error": "文件不存在，请重新上传"}
@@ -346,93 +340,57 @@ def analyze_data(filename: str, question: str):
         df = load_dataframe(file_path)
     except Exception as e:
         return {"success": False, "error": f"文件解析失败：{str(e)[:120]}"}
+
     captured = {"data": None}
-    agent_tools = build_tools(df, captured)
-    tools_by_name = {t.name: t for t in agent_tools}
+    tools = build_tools(df, captured)
 
-    context = [
-        {"role": "system", "content": system_prompt},
-        {"role": "user", "content": f"数据已加载。用户问题：{question}"}
-    ]
+    agent = create_agent(
+        model=get_llm(),
+        tools=tools,
+        system_prompt=(
+            "你是专业的数据分析智能体，可以调用工具完成用户的数据分析任务。\n"
+            "重要：每次调用工具之前，必须先用一句话（不超过 30 字）说明你接下来打算做什么、为什么，"
+            "然后再调用工具。这句话会展示给用户看。\n"
+            "1. 列名或数据类型不明确时，先调用 get_overview 了解数据结构\n"
+            "2. 所有结论必须基于工具返回的真实结果，不要编造数据\n"
+            "3. 任务完成后用中文给出简洁结论\n"
+        ),
+    )
 
-    max_steps = 5
+    try:
+        result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+    except Exception as e:
+        return {"success": False, "error": f"智能体执行失败：{str(e)[:200]}"}
+
+    messages = result["messages"]
+
+    # 把 LangGraph 的消息链路还原成前端需要的 tool_history
     tool_history = []
-    last_result_data = None
+    last_action, last_input = None, {}
+    for msg in messages:
+        for call in (getattr(msg, "tool_calls", None) or []):
+            tool_history.append({
+                "step": len(tool_history) + 1,
+                "thought": msg.content or "",
+                "action": call["name"],
+                "input": call["args"],
+            })
+            last_action, last_input = call["name"], call["args"]
 
-    for step in range(max_steps):
-        prompt = ""
-        for msg in context:
-            if msg["role"] == "system":
-                prompt += msg["content"] + "\n\n"
-            elif msg["role"] == "user":
-                prompt += f"用户：{msg['content']}\n"
-            elif msg["role"] == "assistant":
-                prompt += f"你：{msg['content']}\n"
-            elif msg["role"] == "tool":
-                prompt += f"工具返回结果：\n{msg['content']}\n"
-
-        try:
-            ai_response = call_ai(prompt)
-        except Exception as e:
-            return {
-                "success": False,
-                "error": str(e),
-                "tool_history": tool_history
-            }
-
-        ai_response = ai_response.strip()
-        if ai_response.startswith("```json"):
-            ai_response = ai_response[7:]
-        if ai_response.endswith("```"):
-            ai_response = ai_response[:-3]
-        ai_response = ai_response.strip()
-
-        try:
-            action_data = json.loads(ai_response)
-        except Exception as e:
-            context.append({"role": "assistant", "content": ai_response})
-            context.append({"role": "user", "content": f"输出格式错误，请严格按照JSON格式输出。错误信息：{str(e)}"})
-            continue
-
-        tool_history.append({
-            "step": step + 1,
-            "thought": action_data.get("thought", ""),
-            "action": action_data.get("action", ""),
-            "input": action_data.get("action_input", {})
-        })
-
-        if action_data.get("is_finish", False) or action_data.get("action") == "finish":
-            return {
-                "success": True,
-                "final_answer": action_data.get("final_answer", "分析完成"),
-                "chart": action_data.get("chart"),
-                "result": last_result_data,
-                "tool_history": tool_history,
-                "steps": step + 1
-            }
-
-        tool_name = action_data.get("action")
-        tool_input = action_data.get("action_input", {})
-
-        if tool_name not in tools_by_name:
-            result_text = f"错误：不存在工具 {tool_name}"
-        else:
-            try:
-                captured["data"] = None
-                # LangChain Tool 接收参数字典，内部自动校验类型和必填项
-                result_text = tools_by_name[tool_name].invoke(tool_input)
-                if captured["data"] is not None:
-                    last_result_data = captured["data"]
-            except Exception as e:
-                result_text = f"工具执行失败：{str(e)}"
-
-        context.append({"role": "assistant", "content": ai_response})
-        context.append({"role": "tool", "content": result_text})
+    # 最后一条"有内容"的 AIMessage 就是最终结论
+    final_answer = ""
+    for msg in reversed(messages):
+        if isinstance(msg, AIMessage) and msg.content:
+            final_answer = msg.content
+            break
 
     return {
-        "success": False,
-        "error": "超出最大执行步数，任务未完成",
-        "tool_history": tool_history
+        "success": True,
+        "final_answer": final_answer,
+        "chart": derive_chart(last_action, last_input, captured["data"]),
+        "result": captured["data"],
+        "tool_history": tool_history,
+        "steps": len(tool_history),
     }
 def build_tools(df, captured):
     """把工具绑定到当前 df，返回 LangChain Tool 列表。
