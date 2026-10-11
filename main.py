@@ -8,7 +8,6 @@ import pandas as pd
 import os
 import requests
 import tempfile
-import chromadb
 from pypdf import PdfReader
 from docx import Document
 from pydantic import BaseModel
@@ -20,6 +19,10 @@ from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain.agents import create_agent
 from langchain_core.messages import AIMessage
+from langchain_chroma import Chroma             
+from langchain_core.embeddings import Embeddings
+from langchain_core.documents import Document
+from langgraph.checkpoint.memory import InMemorySaver
 from pathlib import Path
 from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
@@ -457,24 +460,42 @@ def build_tools(df, captured):
 
     return [get_overview_tool, get_stats_tool, group_agg_tool, filter_tool, sort_tool]
 
-# ==================== RAG知识库模块 ====================
 CHROMA_PATH = "./chroma_db"
 os.makedirs(CHROMA_PATH, exist_ok=True)
 
-# 向量库初始化失败（例如离线时下不动嵌入模型）不应该拖垮整个应用：
-# 数据分析模块要照常可用，所以降级为 None，真正用到 RAG 时再报错
+
+class ChromaONNXEmbeddings(Embeddings):
+    """把 Chroma 自带的 ONNX 嵌入函数包装成 LangChain 的 Embeddings 接口。
+
+    好处：直接复用已经下载到 models/ 的本地模型，不必再引入
+    sentence-transformers + torch 那套重依赖。
+    """
+
+    def __init__(self):
+        self._ef = ONNXMiniLM_L6_V2()
+
+    def embed_documents(self, texts):
+        return [[float(x) for x in v] for v in self._ef(list(texts))]
+
+    def embed_query(self, text):
+        return [float(x) for x in self._ef([text])[0]]
+
+
 _kb_init_error = ""
 try:
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
-    # 使用Chroma内置本地嵌入函数，无需外部接口
-    kb_collection = chroma_client.get_or_create_collection(
-        name="knowledge_base",
-        embedding_function=chromadb.utils.embedding_functions.DefaultEmbeddingFunction()
+    vectorstore = Chroma(
+        collection_name="knowledge_base",
+        embedding_function=ChromaONNXEmbeddings(),
+        persist_directory=CHROMA_PATH,
     )
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 except Exception as e:
-    chroma_client = None
-    kb_collection = None
+    vectorstore = None
+    retriever = None
     _kb_init_error = str(e)
+
+# 会话记忆：必须放在模块级，跨请求共享，否则每次请求都"失忆"
+_rag_checkpointer = InMemorySaver()
 
 
 def kb_unavailable():
@@ -497,7 +518,7 @@ def split_text(text, chunk_size=500, chunk_overlap=50):
 # ==================== RAG接口：文档上传入库 ====================
 @app.post("/rag/upload")
 def rag_upload(file: UploadFile = File(...)):
-    if kb_collection is None:
+    if vectorstore is None:
         return kb_unavailable()
     try:
         suffix = os.path.splitext(file.filename)[1].lower()
@@ -525,14 +546,14 @@ def rag_upload(file: UploadFile = File(...)):
         if not chunks:
             return {"success": False, "error": "文档中没有提取到可用文本（扫描版 PDF 常见）"}
 
-        # ID 里带上内容摘要：同一文件重传走 upsert 覆盖，内容变了则生成新 ID。
-        # 原来用 文件名+序号，同名文件重传 ID 冲突，新内容根本进不去
         digest = hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()[:8]
         ids = [f"{file.filename}-{digest}-{i}" for i in range(len(chunks))]
-        kb_collection.upsert(
+        vectorstore.add_documents(
+            documents=[
+                Document(page_content=c, metadata={"source": file.filename})
+                for c in chunks
+            ],
             ids=ids,
-            documents=chunks,
-            metadatas=[{"source": file.filename} for _ in chunks]
         )
 
         return {
@@ -557,58 +578,62 @@ def rag_upload(file: UploadFile = File(...)):
                 pass
 
 
-# ==================== RAG接口：知识库问答 ====================
 class RagChatRequest(BaseModel):
     question: str
-    history: list = []
+    session_id: str = "default"
+
+
+_rag_system_prompt = (
+    "你是知识库问答助手。\n"
+    "1. 当用户的问题需要查阅知识库时，先调用 search_knowledge_base 检索，"
+    "并严格基于检索到的内容回答，不要编造；知识库里没有就如实说明。\n"
+    "2. 如果用户是在追问或指代之前对话里的内容（如“刚才那个”“第一条”），"
+    "直接结合上下文回答即可。\n"
+    "3. 回答用中文。\n"
+)
 
 
 @app.post("/rag/chat")
 def rag_chat(req: RagChatRequest):
-    if kb_collection is None:
+    if retriever is None:
         return kb_unavailable()
     try:
-        question = req.question
-
-        # 本地向量检索（空库时 n_results 会超过实际条数，先按条数收敛）
-        total = kb_collection.count()
-        if total == 0:
+        # 知识库为空时先给友好提示，省掉两次模型调用
+        if vectorstore._collection.count() == 0:
             return {"success": False, "error": "知识库还是空的，请先上传文档"}
 
-        results = kb_collection.query(
-            query_texts=[question],
-            n_results=min(3, total)
+        collected = {"docs": []}
+
+        @tool("search_knowledge_base", parse_docstring=True)
+        def search_knowledge_base(query: str) -> str:
+            """在本地知识库中检索与问题最相关的资料片段。
+
+            Args:
+                query: 检索用的自然语言问题
+            """
+            docs = retriever.invoke(query)
+            collected["docs"] = [d.page_content for d in docs]
+            if not docs:
+                return "知识库中没有检索到相关内容。"
+            return "\n\n".join(d.page_content for d in docs)
+
+        agent = create_agent(
+            model=get_llm(),
+            tools=[search_knowledge_base],
+            checkpointer=_rag_checkpointer,
+            system_prompt=_rag_system_prompt,
         )
-        related_docs = (results.get("documents") or [[]])[0]
 
-        # 拼接提示词
-        context = "\n\n".join(related_docs)
-
-        # 多轮对话：把最近几轮历史带进上下文（原来 history 参数收了但从没用过）
-        history_text = ""
-        for item in (req.history or [])[-6:]:
-            role = "用户" if item.get("role") == "user" else "助手"
-            history_text += f"{role}：{item.get('content', '')}\n"
-
-        prompt = "请基于以下参考资料回答用户的问题。如果参考资料里没有答案，就说明无法回答。\n\n"
-        prompt += f"参考资料：\n{context}\n\n"
-        if history_text:
-            prompt += f"历史对话：\n{history_text}\n"
-        prompt += f"用户问题：{question}\n"
-
-        # 调用大模型生成回答
-        answer = call_ai(prompt)
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": req.question}]},
+            # thread_id 就是会话 ID：同一个 session_id 的多次提问共享上下文
+            config={"configurable": {"thread_id": req.session_id}},
+        )
 
         return {
             "success": True,
-            "answer": answer,
-            "related_docs": related_docs
+            "answer": result["messages"][-1].content,
+            "related_docs": collected["docs"],
         }
     except Exception as e:
-        msg = str(e)
-        low = msg.lower()
-        if (isinstance(e, PermissionError) or ".cache" in msg
-                or "timeout" in low or "timed out" in low or "onnx" in low or "download" in low):
-            msg += ("（Chroma 首次使用需要把约 80MB 的嵌入模型下载到用户目录 ~/.cache/chroma，"
-                    "需保证该目录可写且能联网；网络慢时可能超时，重试一次即可）")
-        return {"success": False, "error": msg}
+        return {"success": False, "error": str(e)}
