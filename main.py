@@ -17,6 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 # 把嵌入模型缓存放进项目目录，而不是用户目录 ~/.cache/chroma
 # （受限环境下用户目录不可写；放项目里也让整个项目自成一体）
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
 from pathlib import Path
 from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
@@ -305,14 +306,6 @@ def tool_sort(df, column, ascending=True):
     return text, data
 
 
-TOOLS = {
-    "get_overview": tool_get_overview,
-    "get_stats": tool_get_stats,
-    "group_agg": tool_group_agg,
-    "filter": tool_filter,
-    "sort": tool_sort
-}
-
 # ==================== Agent数据分析接口 ====================
 @app.post("/analyze")
 def analyze_data(filename: str, question: str):
@@ -353,6 +346,9 @@ def analyze_data(filename: str, question: str):
         df = load_dataframe(file_path)
     except Exception as e:
         return {"success": False, "error": f"文件解析失败：{str(e)[:120]}"}
+    captured = {"data": None}
+    agent_tools = build_tools(df, captured)
+    tools_by_name = {t.name: t for t in agent_tools}
 
     context = [
         {"role": "system", "content": system_prompt},
@@ -418,18 +414,17 @@ def analyze_data(filename: str, question: str):
         tool_name = action_data.get("action")
         tool_input = action_data.get("action_input", {})
 
-        if tool_name not in TOOLS:
+        if tool_name not in tools_by_name:
             result_text = f"错误：不存在工具 {tool_name}"
-            result_data = None
         else:
             try:
-                tool_func = TOOLS[tool_name]
-                result_text, result_data = tool_func(df, **tool_input)
-                if result_data is not None:
-                    last_result_data = result_data
+                captured["data"] = None
+                # LangChain Tool 接收参数字典，内部自动校验类型和必填项
+                result_text = tools_by_name[tool_name].invoke(tool_input)
+                if captured["data"] is not None:
+                    last_result_data = captured["data"]
             except Exception as e:
                 result_text = f"工具执行失败：{str(e)}"
-                result_data = None
 
         context.append({"role": "assistant", "content": ai_response})
         context.append({"role": "tool", "content": result_text})
@@ -439,6 +434,70 @@ def analyze_data(filename: str, question: str):
         "error": "超出最大执行步数，任务未完成",
         "tool_history": tool_history
     }
+def build_tools(df, captured):
+    """把工具绑定到当前 df，返回 LangChain Tool 列表。
+
+    - df 不能交给模型，所以用闭包固定住，只暴露模型该填的参数
+    - 工具返回值是给模型看的文本；结构化数据走 captured["data"] 旁路带出，供前端画图
+    """
+
+    @tool("get_overview", parse_docstring=True)
+    def get_overview_tool() -> str:
+        """获取数据概览：行数、列数、列名以及每列的数据类型。不需要参数。"""
+        text, data = tool_get_overview(df)
+        captured["data"] = data
+        return text
+
+    @tool("get_stats", parse_docstring=True)
+    def get_stats_tool(columns: list[str]) -> str:
+        """获取指定数值列的统计量（计数、均值、标准差、最小值、四分位数、最大值）。
+
+        Args:
+            columns: 要统计的列名列表，例如 ["2023年"]
+        """
+        text, data = tool_get_stats(df, columns)
+        captured["data"] = data
+        return text
+
+    @tool("group_agg", parse_docstring=True)
+    def group_agg_tool(group_col: str, agg_col: str, method: str = "mean") -> str:
+        """按某列分组，对另一列做聚合计算。
+
+        Args:
+            group_col: 分组依据的列名
+            agg_col: 被聚合的数值列名
+            method: 聚合方法，可选 mean/sum/count/max/min
+        """
+        text, data = tool_group_agg(df, group_col, agg_col, method)
+        captured["data"] = data
+        return text
+
+    @tool("filter", parse_docstring=True)
+    def filter_tool(column: str, operator: str, value: str) -> str:
+        """按条件过滤数据，返回符合条件的记录数与前 20 行。
+
+        Args:
+            column: 用于判断的列名
+            operator: 运算符，可选 > < == >= <= !=
+            value: 对比值
+        """
+        text, data = tool_filter(df, column, operator, value)
+        captured["data"] = data
+        return text
+
+    @tool("sort", parse_docstring=True)
+    def sort_tool(column: str, ascending: bool = True) -> str:
+        """按指定列排序，返回前 20 行。
+
+        Args:
+            column: 排序依据的列名
+            ascending: True 升序，False 降序
+        """
+        text, data = tool_sort(df, column, ascending)
+        captured["data"] = data
+        return text
+
+    return [get_overview_tool, get_stats_tool, group_agg_tool, filter_tool, sort_tool]
 
 # ==================== RAG知识库模块 ====================
 CHROMA_PATH = "./chroma_db"
