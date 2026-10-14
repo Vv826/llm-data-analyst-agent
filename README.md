@@ -13,6 +13,10 @@
 
 ![知识库问答](docs/screenshot-2-rag.png)
 
+**多智能体协同（Supervisor）**
+
+![多智能体协同](docs/screenshot-3-multi.png)
+
 ## 核心功能
 
 ### 模块一：AI 自助数据分析（Agent 模式）
@@ -29,12 +33,19 @@
 - **多轮对话**：基于 LangGraph checkpointer，按 session_id 记忆上下文
 - 回答附带检索到的原文片段，支持溯源
 
+### 模块三：多智能体协同（Supervisor）
+- **规划节点**：判断一个问题需要哪些专家（数据分析 / 知识库检索）
+- **两个专家节点**：分别复用模块一的 pandas 工具集与模块二的 RAG 两阶段检索
+- **汇总节点**：融合多方结论并**明确指出互相矛盾之处**；只有一位专家时自动跳过汇总调用
+- 支持跨模块任务，例如"知识库里的结论，和我上传的表格数据对得上吗？"—— 单 Agent 做不到
+- 返回完整调度链路：规划结果、各专家结论与耗时、检索到的原文
+
 ## 技术栈
 
 | 层次 | 技术选型 |
 | --- | --- |
 | 后端框架 | FastAPI 0.142 + Uvicorn |
-| 智能体编排 | LangChain 1.4 + LangGraph 1.2（`create_agent` + 原生 tool calling） |
+| 智能体编排 | LangChain 1.4 + LangGraph 1.2（`create_agent` + 原生 tool calling + `StateGraph` 多智能体协同） |
 | 大模型 | 字节豆包（火山方舟，OpenAI 兼容接口），通过 `langchain-openai` 的 `ChatOpenAI` 接入 |
 | 向量库 | ChromaDB 1.5（本地持久化），`langchain-chroma` 集成 |
 | 嵌入模型 | ONNX 版 all-MiniLM-L6-v2（384 维，本地推理，无需外部 API） |
@@ -61,6 +72,15 @@ RAG 知识库链路
     └─ POST /rag/chat    create_agent + 检索工具 + checkpointer(thread_id = session_id)
                          → 向量召回 top10 → LLM 重排取 top3 → 基于原文生成回答
         返回            answer + related_docs
+
+多智能体协同链路
+  浏览器
+    └─ POST /multi/analyze  LangGraph StateGraph：
+                              plan（规划需要哪些专家）
+                                ├─ data_expert  复用 pandas 工具集
+                                └─ kb_expert    复用 RAG 两阶段检索
+                              summarize（融合，仅一位专家时跳过）
+        返回                  plan + findings[] + answer
 ```
 
 ## 技术亮点
@@ -75,6 +95,7 @@ RAG 知识库链路
 8. **两阶段检索（向量宽召回 + LLM 重排）**：先召回 top-10，再由大模型重排取 top-3。关键是提示词设计 —— 要求模型"**给所有候选排序**"而不是"**筛选出前 3 段**"，后者会让模型丢掉相关片段；并对排序任务**关闭思考链**，单次重排从 94.8 秒降到 2.1 秒，答案完全一致。
 9. **大模型调用可观测性**：用 LangChain callback 捕获每一次底层模型调用的耗时与 token，聚合出调用次数 / 总 token / 平均与 P95 延迟 / 估算成本，经 `/metrics` 暴露并在前端展示，按 `analyze` / `rag` / `rerank` 分类统计；重排的回退分支也会上报失败指标，避免"静默降级"。
 10. **模型层可插拔**：`base_url` / `api_key` / `model` 全部配置化，换模型或供应商只改 `.env`；可为"检索重排"单独指定更轻量的模型。针对不同厂商"关闭思考链"参数名不一致的问题，做了**自动降级重试**（参数被拒就去掉它重试一次）。
+11. **多智能体协同（手写 LangGraph Supervisor）**：规划节点判断需要哪些专家，条件路由把任务交给 `data_expert` / `kb_expert`（可同时触发），最后由汇总节点融合；专家节点**复用**已有的工具集与检索器，不重复造轮子。调度链路完全可见 —— 前端展示规划结果、每位专家的耗时与结论、检索到的原文。
 
 ## 效果评测
 
