@@ -40,6 +40,34 @@
 - 支持跨模块任务，例如"知识库里的结论，和我上传的表格数据对得上吗？"—— 单 Agent 做不到
 - 返回完整调度链路：规划结果、各专家结论与耗时、检索到的原文
 
+## MCP Server（把能力开放给任意 MCP 客户端）
+
+除了内置 Web 界面，本项目还把**表格分析工具与知识库检索**暴露成标准 [MCP](https://modelcontextprotocol.io) Server —— 任何支持 MCP 的客户端（Claude Desktop、Cursor、自研 Agent……）接上就能用，**无需修改本项目一行代码**。
+
+**暴露 7 个工具**：`list_tables` / `table_overview` / `table_stats` / `group_aggregate` / `filter_rows` / `sort_rows` / `search_knowledge_base`（含两阶段重排）
+
+**启动与自测**：
+
+```bash
+venv\Scripts\python.exe mcp_server.py       # stdio 传输，由 MCP 客户端拉起
+venv\Scripts\python.exe mcp_smoke_test.py   # 端到端自测：握手 → 列工具 → 真实调用
+```
+
+**接入 Claude Desktop**（编辑 `claude_desktop_config.json`）：
+
+```json
+{
+  "mcpServers": {
+    "ai-data-platform": {
+      "command": "C:\\path\\to\\ai-data-project\\venv\\Scripts\\python.exe",
+      "args": ["C:\\path\\to\\ai-data-project\\mcp_server.py"]
+    }
+  }
+}
+```
+
+> ⚠️ **一个容易踩的坑**：MCP 客户端会以**任意工作目录**拉起 server 进程，所以 `mcp_server.py` 内部一律用绝对路径定位 `uploads/`，不能依赖 `os.getcwd()`。自测脚本特意验证了这一点。
+
 ## 技术栈
 
 | 层次 | 技术选型 |
@@ -51,6 +79,7 @@
 | 嵌入模型 | ONNX 版 all-MiniLM-L6-v2（384 维，本地推理，无需外部 API） |
 | 数据处理 | pandas 3.0 + numpy + openpyxl + chardet（自动探测 CSV 编码） |
 | 文档解析 | pypdf（PDF）、python-docx（Word） |
+| 工具协议 | MCP 2.3（`MCPServer`，stdio 传输）—— 7 个工具开放给任意 MCP 客户端 |
 | 前端 | React 19 + Vite 8 + Ant Design 6 + ECharts 6（黑白灰单色主题，CSS 变量驱动） |
 
 ## 架构
@@ -96,6 +125,7 @@ RAG 知识库链路
 9. **大模型调用可观测性**：用 LangChain callback 捕获每一次底层模型调用的耗时与 token，聚合出调用次数 / 总 token / 平均与 P95 延迟 / 估算成本，经 `/metrics` 暴露并在前端展示，按 `analyze` / `rag` / `rerank` 分类统计；重排的回退分支也会上报失败指标，避免"静默降级"。
 10. **模型层可插拔**：`base_url` / `api_key` / `model` 全部配置化，换模型或供应商只改 `.env`；可为"检索重排"单独指定更轻量的模型。针对不同厂商"关闭思考链"参数名不一致的问题，做了**自动降级重试**（参数被拒就去掉它重试一次）。
 11. **多智能体协同（手写 LangGraph Supervisor）**：规划节点判断需要哪些专家，条件路由把任务交给 `data_expert` / `kb_expert`（可同时触发），最后由汇总节点融合；专家节点**复用**已有的工具集与检索器，不重复造轮子。调度链路完全可见 —— 前端展示规划结果、每位专家的耗时与结论、检索到的原文。
+12. **MCP Server 标准化输出**：把 6 个表格分析工具 + 知识库检索实现为标准 MCP Server，任意 MCP 客户端（Claude Desktop / Cursor）可直接复用；并用官方 SDK 的客户端写了端到端自测（握手 → 工具发现 → 真实调用）。**服务端不依赖工作目录**（全部用绝对路径），这是 MCP 客户端拉起子进程时的真实约束。
 
 ## 效果评测
 
@@ -165,6 +195,8 @@ npm run dev
 ai-data-project/
 ├── main.py                  # 后端全部接口（上传 / Agent 分析 / RAG 问答）
 ├── observability.py         # 大模型调用指标（token / 延迟 / 成本）
+├── mcp_server.py            # MCP Server：把工具开放给任意 MCP 客户端
+├── mcp_smoke_test.py        # MCP 端到端自测（官方 SDK 客户端）
 ├── eval/                    # 检索评测：qa_set.json 评测集 + run_eval.py
 ├── requirements.txt
 ├── .env.example             # 配置模板（复制为 .env 后填密钥）
@@ -199,6 +231,7 @@ ai-data-project/
 4. **不要用多个进程同时写同一个 Chroma 库**：嵌入式向量库是单写入者模型，跨进程创建/删除集合会让运行中的服务持有失效句柄，表现为检索结果为空。
 5. **英文嵌入模型对中文几乎无区分度**：知识库存了 4 份文档后，问"就业人口"却检索到了"电力运营"的片段。用余弦相似度量化后定位到原因——不同主题的中文句向量相似度全挤在 0.47~0.60，而同内容英文的分布是 0.003~0.26，说明该模型对中文的语义区分能力基本失效。**修复分两步**：先加"按文档限定检索范围"，把问题从概率问题变成确定性问题；再考虑替换中文嵌入模型。
 6. **"让模型筛选"不如"让模型排序"；而兜底逻辑必须留痕**：LLM 重排初版提示词是"挑出最能回答的前 3 段"，结果模型会**主动丢掉相关片段**（正确文档 100% 在候选池里，Hit@1 却只有 64.3%）；改成"给所有候选排序、由代码取前 3"后达到 100%。另外，重排里写了 `except Exception: 回退到向量排序` 的兜底，一次参数笔误造成的 `NameError` 被它静默吞掉 —— 表面一切正常，实际早已退化成纯向量检索（Hit@3 从 100% 掉到 57.1%）。**教训：兜底分支必须上报指标或日志，否则它会成为 bug 的隐身衣。**
+7. **第三方 SDK 的大版本改名，要先做 introspection 再动手**：写 MCP Server 时按 v1 的写法 `from mcp.server.fastmcp import FastMCP`，装上 2.3.0 后直接 `ModuleNotFoundError` —— 2.x 把它改名成了 `MCPServer`（导入路径 `mcp.server.mcpserver`）。**写胶水代码前先跑一次 `inspect.signature()` / `dir()` 确认 API 形状**，比写完再调试省事得多（顺便发现客户端 API 没变、连 `cwd` 参数都在）。
 
 ## License
 
