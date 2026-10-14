@@ -1,0 +1,19 @@
+[
+  { "question": "纽约哪个区域的房屋持有收益最高？", "expected_source": "part3项目分析报告.docx" },
+  { "question": "纽约人口和房屋单元数据分别来自哪些文件？", "expected_source": "part3项目分析报告.docx" },
+  { "question": "收入调整因子是怎么计算的？", "expected_source": "part3项目分析报告.docx" },
+  { "question": "曼哈顿和布朗克斯的房屋收益相比如何？", "expected_source": "part3项目分析报告.docx" },
+
+  { "question": "2014年3月哪个省份的售电量最高？", "expected_source": "part4项目分析报告.docx" },
+  { "question": "南北中心客服接听量有什么差异？", "expected_source": "part4项目分析报告.docx" },
+  { "question": "售电量的计划完成率表现如何？", "expected_source": "part4项目分析报告.docx" },
+  { "question": "用电结构中占比最高的是哪一类？", "expected_source": "part4项目分析报告.docx" },
+
+  { "question": "无人售卖机的销售数据覆盖了哪个时间段？", "expected_source": "part5项目分析报告.docx" },
+  { "question": "哪些能量饮料品牌在多数城市进入了头部？", "expected_source": "part5项目分析报告.docx" },
+  { "question": "用户消费时间段主要集中在什么时候？", "expected_source": "part5项目分析报告.docx" },
+  { "question": "设备数量与订单量之间是什么关系？", "expected_source": "part5项目分析报告.docx" },
+
+  { "question": "就业人员统计数据覆盖了哪些年份？", "expected_source": "就业人口年度数据.csv" },
+  { "question": "就业人口数据里包含第几产业的就业人员？", "expected_source": "就业人口年度数据.csv" }
+]

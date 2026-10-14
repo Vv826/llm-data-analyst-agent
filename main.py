@@ -592,6 +592,60 @@ def rag_documents():
     except Exception as e:
         return {"success": False, "error": str(e)}
 
+# 两阶段检索参数：先宽召回，再由大模型重排
+RECALL_K = 10   # 向量召回数量（宽召回，宁多勿漏）
+FINAL_K = 3     # 重排后真正喂给模型的片段数
+
+_RERANK_PROMPT = """你是检索结果重排器。下面有用户的提问和若干候选资料片段。
+请判断每个片段与提问的相关性，**只输出 JSON**，格式为 {{"ranked": [片段编号, ...]}}
+
+要求：
+1. ranked 按相关性从高到低排列，只保留能帮助回答提问的片段
+2. 最多保留 {top_n} 个
+3. 不要输出任何解释文字或 markdown 围栏
+
+用户提问：{question}
+
+候选片段：
+{snippets}
+"""
+
+
+def _parse_ranked(raw, n):
+    """从模型输出里稳妥地取出 ranked 索引列表；取不到返回 None"""
+    text = raw.strip()
+    if text.startswith("```"):
+        text = text.strip("`")
+        if text[:4].lower() == "json":
+            text = text[4:]
+    start, end = text.find("{"), text.rfind("}")
+    if start == -1 or end == -1:
+        return None
+    data = json.loads(text[start:end + 1])
+    ranked = data.get("ranked")
+    if not isinstance(ranked, list):
+        return None
+    return [i for i in ranked if isinstance(i, int) and 0 <= i < n]
+
+
+def rerank_documents(question, docs, top_n=FINAL_K):
+    """第二阶段：用大模型对召回结果做相关性重排。
+
+    任何异常（模型输出不合法、接口超时）都回退到向量排序，
+    保证重排只可能变好、不会让检索挂掉。
+    """
+    docs = list(docs)
+    if len(docs) <= 1:
+        return docs[:top_n]
+    snippets = "\n\n".join(f"[{i}] {d.page_content[:300]}" for i, d in enumerate(docs))
+    try:
+        raw = call_ai(_RERANK_PROMPT.format(question=question, snippets=snippets, top_n=top_n))
+        order = _parse_ranked(raw, len(docs))
+        if not order:                      # 解析失败 或 模型认为都不相关
+            return docs[:top_n]            # → 保守回退到向量排序
+        return [docs[i] for i in order[:top_n]]
+    except Exception:
+        return docs[:top_n]
 
 class RagChatRequest(BaseModel):
     question: str
@@ -625,10 +679,12 @@ def rag_chat(req: RagChatRequest):
 
         # 按需限定检索范围：指定文档时只在该文档的片段里检索，
         # 从根本上避免"问 A 文档却答成 B 文档"
-        search_kwargs = {"k": 3}
+        # 两阶段检索：先宽召回（top-10），再由大模型重排取 top-3
+        # 指定文档时只在它的片段里召回，避免"问 A 文档却答成 B 文档"
+        recall_kwargs = {"k": RECALL_K}
         if req.source:
-            search_kwargs["filter"] = {"source": req.source}
-        retriever = vectorstore.as_retriever(search_kwargs=search_kwargs)
+            recall_kwargs["filter"] = {"source": req.source}
+        wide_retriever = vectorstore.as_retriever(search_kwargs=recall_kwargs)
 
         collected = {"docs": []}
 
@@ -639,7 +695,8 @@ def rag_chat(req: RagChatRequest):
             Args:
                 query: 检索用的自然语言问题
             """
-            docs = retriever.invoke(query)
+            candidates = wide_retriever.invoke(query)
+            docs = rerank_documents(query, candidates, top_n=FINAL_K)
             collected["docs"] = [d.page_content for d in docs]
             if not docs:
                 return "知识库中没有检索到相关内容。"
