@@ -26,6 +26,9 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 from langgraph.checkpoint.memory import InMemorySaver
+import operator
+from typing import Annotated, TypedDict
+from langgraph.graph import StateGraph, START, END
 from pathlib import Path
 from chromadb.utils.embedding_functions.onnx_mini_lm_l6_v2 import ONNXMiniLM_L6_V2
 
@@ -717,6 +720,34 @@ def rerank_documents(question, docs, top_n=FINAL_K):
         observability.record_llm_call("rerank-fallback", 0, ok=False, error=str(e)[:120])
         return docs[:top_n]
 
+def build_retriever_tool(captured, source=None, use_rerank=True):
+    """构建 RAG 检索工具（两阶段：向量宽召回 + LLM 重排）。
+
+    captured：把检索到的原文回传给接口层，用于溯源展示
+    source：限定只在某一份文档里检索，避免"问 A 文档却答成 B 文档"
+    """
+    recall_kwargs = {"k": RECALL_K}
+    if source:
+        recall_kwargs["filter"] = {"source": source}
+    wide_retriever = vectorstore.as_retriever(search_kwargs=recall_kwargs)
+
+    @tool("search_knowledge_base", parse_docstring=True)
+    def search_knowledge_base(query: str) -> str:
+        """在本地知识库中检索与问题最相关的资料片段。
+
+        Args:
+            query: 检索用的自然语言问题
+        """
+        candidates = wide_retriever.invoke(query)
+        docs = rerank_documents(query, candidates, top_n=FINAL_K) if use_rerank else candidates[:FINAL_K]
+        captured["docs"] = [d.page_content for d in docs]
+        if not docs:
+            return "知识库中没有检索到相关内容。"
+        return "\n\n".join(d.page_content for d in docs)
+
+    return search_knowledge_base
+
+
 class RagChatRequest(BaseModel):
     question: str
     session_id: str = "default"
@@ -748,34 +779,13 @@ def rag_chat(req: RagChatRequest):
         if vectorstore._collection.count() == 0:
             return {"success": False, "error": "知识库还是空的，请先上传文档"}
 
-        # 按需限定检索范围：指定文档时只在该文档的片段里检索，
-        # 从根本上避免"问 A 文档却答成 B 文档"
-        # 两阶段检索：先宽召回（top-10），再由大模型重排取 top-3
-        # 指定文档时只在它的片段里召回，避免"问 A 文档却答成 B 文档"
-        recall_kwargs = {"k": RECALL_K}
-        if req.source:
-            recall_kwargs["filter"] = {"source": req.source}
-        wide_retriever = vectorstore.as_retriever(search_kwargs=recall_kwargs)
-
+        # 检索工具：两阶段检索（宽召回 + 重排），按需限定文档范围
         collected = {"docs": []}
-
-        @tool("search_knowledge_base", parse_docstring=True)
-        def search_knowledge_base(query: str) -> str:
-            """在本地知识库中检索与问题最相关的资料片段。
-
-            Args:
-                query: 检索用的自然语言问题
-            """
-            candidates = wide_retriever.invoke(query)
-            docs = rerank_documents(query, candidates, top_n=FINAL_K) if req.use_rerank else candidates[:FINAL_K]
-            collected["docs"] = [d.page_content for d in docs]
-            if not docs:
-                return "知识库中没有检索到相关内容。"
-            return "\n\n".join(d.page_content for d in docs)
+        search_tool = build_retriever_tool(collected, source=req.source, use_rerank=req.use_rerank)
 
         agent = create_agent(
             model=get_llm(),
-            tools=[search_knowledge_base],
+            tools=[search_tool],
             checkpointer=_rag_checkpointer,
             system_prompt=_rag_system_prompt,
         )
@@ -803,3 +813,209 @@ def rag_chat(req: RagChatRequest):
 def get_metrics():
     """大模型调用指标：次数 / token / 延迟（均值、P95）/ 估算成本"""
     return observability.snapshot()
+
+
+# ==================== 多智能体协同（Supervisor 架构） ====================
+# 规划节点判断需要哪些专家 → 专家各自执行 → 汇总节点融合结论。
+# 与单 Agent 的区别：单个问题可以同时调动"数据分析"和"知识库检索"两个专家，
+# 例如"文档里的结论，和我上传的这份数据对得上吗？"
+
+_MULTI_PLAN_PROMPT = """你是一个任务调度器。根据用户问题，判断需要哪些专家来回答。
+
+可选专家：
+- data：数据分析专家。能读取用户上传的表格，做统计、分组、过滤、排序等真实计算。
+- kb：知识库专家。能检索知识库中的文档（项目分析报告等），回答"文档里写了什么"。
+
+规则：
+1. 需要基于表格算出真实结果 → data
+2. 问文档内容、文档结论 → kb
+3. 需要把两者结合（如"文档的结论和我的数据对得上吗"）→ 两个都选
+4. 只输出 JSON，不要解释。格式：{{"agents": ["data"]}} 或 {{"agents": ["kb"]}} 或 {{"agents": ["data", "kb"]}}
+
+用户问题：{question}
+{file_hint}
+"""
+
+_MULTI_SUMMARY_PROMPT = """你是多智能体系统的汇总器。下面是各专家针对同一问题给出的独立结论，
+请把它们融合成一段完整、简洁的中文回答。
+
+要求：
+1. 保留关键数字与事实，不得编造任何信息
+2. 如果各专家的结论存在**矛盾或不一致**，必须明确指出
+3. 不要罗列"专家A说…专家B说…"，直接给出融合后的结论
+
+用户问题：{question}
+
+各专家结论：
+{findings}
+"""
+
+
+class MultiState(TypedDict):
+    question: str
+    filename: str | None
+    plan: list
+    findings: Annotated[list, operator.add]
+    answer: str
+
+
+def _multi_plan(state):
+    """① 规划：决定调用哪些专家（分类任务，关闭思考更快）"""
+    has_file = bool(state.get("filename"))
+    hint = f"（用户已上传表格：{state['filename']}）" if has_file else "（用户未上传表格，data 专家不可用）"
+    try:
+        raw = call_ai(_MULTI_PLAN_PROMPT.format(question=state["question"], file_hint=hint),
+                      label="multi/plan", no_thinking=True)
+        s, e = raw.find("{"), raw.rfind("}")
+        agents = json.loads(raw[s:e + 1]).get("agents") or []
+    except Exception:
+        agents = []
+
+    agents = [a for a in agents if a in ("data", "kb")]
+    if not has_file:                     # 没有表格，数据专家无法工作
+        agents = [a for a in agents if a != "data"]
+    if vectorstore is None:              # 知识库不可用
+        agents = [a for a in agents if a != "kb"]
+    if not agents:                       # 兜底：按可用性选一个
+        agents = ["data"] if has_file else (["kb"] if vectorstore is not None else [])
+    return {"plan": agents}
+
+
+def _multi_data_expert(state):
+    """② 专家一：数据分析（复用现有 5 个工具）"""
+    t0 = time.perf_counter()
+    file_path = os.path.join(UPLOAD_DIR, safe_filename(state["filename"]))
+    df = load_dataframe(file_path)
+    captured = {"data": None}
+    agent = create_agent(
+        model=get_llm(),
+        tools=build_tools(df, captured),
+        system_prompt=(
+            "你是数据分析专家。所有结论必须基于工具返回的真实结果，不要编造数据。"
+            "遇到不认识的字段编码（如 FIPS 州代码、行业代码）不要臆测其含义，只描述数值本身。"
+            "用中文给出简洁结论。"
+        ),
+    )
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": state["question"]}]},
+        config={"callbacks": [observability.MetricsCallback("multi/data")]},
+    )
+    answer = ""
+    for msg in reversed(result["messages"]):
+        if isinstance(msg, AIMessage) and msg.content:
+            answer = msg.content
+            break
+    return {"findings": [{
+        "agent": "data", "title": "数据分析专家", "content": answer,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        "file": state["filename"],
+    }]}
+
+
+def _multi_kb_expert(state):
+    """③ 专家二：知识库检索（复用 RAG 两阶段检索）"""
+    t0 = time.perf_counter()
+    captured = {"docs": []}
+    agent = create_agent(
+        model=get_llm(),
+        tools=[build_retriever_tool(captured)],
+        system_prompt=_rag_system_prompt,
+    )
+    result = agent.invoke(
+        {"messages": [{"role": "user", "content": state["question"]}]},
+        config={"callbacks": [observability.MetricsCallback("multi/kb")]},
+    )
+    return {"findings": [{
+        "agent": "kb", "title": "知识库专家",
+        "content": result["messages"][-1].content,
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        "docs": captured["docs"],
+    }]}
+
+
+def _multi_summarize(state):
+    """④ 汇总：融合各专家结论（只有一位专家时省掉这次调用）"""
+    findings = state.get("findings") or []
+    if not findings:
+        return {"answer": "抱歉，没有可用的资源来回答这个问题。"}
+    if len(findings) == 1:
+        return {"answer": findings[0]["content"]}
+    blocks = "\n\n".join(f"【{f['title']}】\n{f['content']}" for f in findings)
+    answer = call_ai(_MULTI_SUMMARY_PROMPT.format(question=state["question"], findings=blocks),
+                     label="multi/summary")
+    return {"answer": answer}
+
+
+def _route_after_plan(state):
+    agents = state.get("plan") or []
+    if "data" in agents:
+        return "data_expert"
+    if "kb" in agents:
+        return "kb_expert"
+    return "summarize"
+
+
+def _route_after_data(state):
+    return "kb_expert" if "kb" in (state.get("plan") or []) else "summarize"
+
+
+def build_multi_agent():
+    """构建 Supervisor 图：规划 → 专家（串行，可多个）→ 汇总"""
+    g = StateGraph(MultiState)
+    g.add_node("plan", _multi_plan)
+    g.add_node("data_expert", _multi_data_expert)
+    g.add_node("kb_expert", _multi_kb_expert)
+    g.add_node("summarize", _multi_summarize)
+
+    g.add_edge(START, "plan")
+    g.add_conditional_edges("plan", _route_after_plan, ["data_expert", "kb_expert", "summarize"])
+    g.add_conditional_edges("data_expert", _route_after_data, ["kb_expert", "summarize"])
+    g.add_edge("kb_expert", "summarize")
+    g.add_edge("summarize", END)
+    return g.compile()
+
+
+_multi_agent = None
+
+
+def get_multi_agent():
+    global _multi_agent
+    if _multi_agent is None:
+        _multi_agent = build_multi_agent()
+    return _multi_agent
+
+
+class MultiRequest(BaseModel):
+    question: str
+    filename: str | None = None
+
+
+@app.post("/multi/analyze")
+def multi_analyze(req: MultiRequest):
+    """多智能体协同：规划 → 专家执行 → 汇总"""
+    if req.filename:
+        file_path = os.path.join(UPLOAD_DIR, safe_filename(req.filename))
+        if not os.path.exists(file_path):
+            return {"success": False, "error": "文件不存在，请重新上传"}
+    if vectorstore is None and not req.filename:
+        return {"success": False, "error": "知识库不可用，且没有上传表格文件，无可用的专家"}
+
+    t0 = time.perf_counter()
+    try:
+        state = get_multi_agent().invoke({
+            "question": req.question,
+            "filename": req.filename,
+            "plan": [],
+            "findings": [],
+            "answer": "",
+        })
+    except Exception as e:
+        return {"success": False, "error": f"多智能体执行失败：{str(e)[:200]}"}
+
+    return {
+        "success": True,
+        "plan": state.get("plan") or [],
+        "findings": state.get("findings") or [],
+        "answer": state.get("answer") or "",
+        "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+    }
