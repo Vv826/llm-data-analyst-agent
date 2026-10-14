@@ -2,6 +2,7 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # 前端依赖与构建产物
 frontend/node_modules/

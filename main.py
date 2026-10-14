@@ -692,10 +692,10 @@ def _parse_ranked(raw, n):
                 return [i for i in ranked if isinstance(i, int) and 0 <= i < n]
         except Exception:
             pass
-    # 退化处理：直接把输出里的数字当编号
-    nums = [int(x) for x in re.findall(r"\d+", text)]
+    # 退化处理：把输出里的整数当编号。
+    # 注意正则要带 -?，否则 "-3" 会被 \d+ 抓成 "3"，负号丢失 → 静默取到错误片段
+    nums = [int(x) for x in re.findall(r"-?\d+", text)]
     return [i for i in nums if 0 <= i < n][:n]
-
 
 def rerank_documents(question, docs, top_n=FINAL_K):
     """第二阶段：用大模型对召回结果做相关性重排。

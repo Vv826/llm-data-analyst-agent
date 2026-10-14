@@ -47,3 +47,7 @@ langgraph==1.2.14                  # create_agent 的运行时 + checkpointer
 # 2.x 版：FastMCP 已改名为 MCPServer，导入路径是 mcp.server.mcpserver
 # （v1 的 mcp.server.fastmcp 在 2.x 会直接 ModuleNotFoundError）
 mcp==2.3.0
+
+# ---- 测试 ----
+# 31 个用例，全部不依赖大模型（秒级完成，可进 CI）
+pytest==9.1.1
