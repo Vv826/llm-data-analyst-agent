@@ -29,6 +29,7 @@ import {
 import axios from 'axios'
 import ReactECharts from 'echarts-for-react'
 import RagPanel from './RagPanel'
+import MetricsBar from './MetricsBar'
 import './App.css'
 
 const { TextArea } = Input
@@ -612,6 +613,7 @@ function App() {
         </div>
 
         {mode === 'rag' && <RagPanel />}
+        <MetricsBar />
       </main>
     </div>
   )

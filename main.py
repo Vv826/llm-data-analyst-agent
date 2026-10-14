@@ -8,6 +8,9 @@ import pandas as pd
 import os
 import requests
 import tempfile
+import time
+import re
+import observability
 from pypdf import PdfReader
 from docx import Document as DocxDocument
 from pydantic import BaseModel
@@ -196,29 +199,60 @@ def get_llm():
     return _llm
 
 
-def call_ai(prompt: str):
-    """调用豆包聊天大模型"""
-    try:
-        response = get_llm().invoke(prompt)
-    except Exception as e:
-        raise RuntimeError(f"调用大模型失败：{str(e)[:200]}")
-    return response.content
+def call_ai(prompt: str, label: str = "chat", no_thinking: bool = False):
+    """调用豆包聊天大模型（带耗时 / token / 成本埋点）"""
+    api_key = os.getenv("ARK_API_KEY")
+    if not api_key:
+        raise RuntimeError("未配置 ARK_API_KEY，请在项目根目录的 .env 中填写后重启后端")
+
+    url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json"
+    }
+
+    data = {
+        "model": os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt"),
+        "messages": [
+            {"role": "system", "content": "你是一个数据分析专家，严格按照要求的格式输出。"},
+            {"role": "user", "content": prompt}
+        ],
+        "temperature": 0.1
+    }
+
+    # 重排这类"判断/排序"任务不需要思考链：实测开启思考要 94.8s、烧掉 7900+ reasoning token，
+    # 关闭后只需 2.5s，且答案完全一致
+    if no_thinking:
+        data["thinking"] = {"type": "disabled"}
+
+    t0 = time.perf_counter()
+
+    def elapsed():
+        return (time.perf_counter() - t0) * 1000
 
     try:
         # (连接超时, 读取超时)：上游不响应时不至于把请求永久挂住
         response = requests.post(url, headers=headers, json=data, timeout=(10, 120))
     except requests.exceptions.Timeout:
+        observability.record_llm_call(label, elapsed(), ok=False, error="timeout")
         raise RuntimeError("调用大模型超时，请稍后重试")
     except requests.exceptions.RequestException as e:
+        observability.record_llm_call(label, elapsed(), ok=False, error=str(e))
         raise RuntimeError(f"调用大模型失败：{str(e)[:120]}")
 
     if response.status_code != 200:
+        observability.record_llm_call(label, elapsed(), ok=False, error=f"HTTP {response.status_code}")
         raise RuntimeError(f"大模型接口返回 {response.status_code}：{response.text[:200]}")
 
     try:
         result = response.json()
+        usage = result.get("usage") or {}
+        observability.record_llm_call(label, elapsed(),
+                                      usage.get("prompt_tokens"), usage.get("completion_tokens"))
         return result["choices"][0]["message"]["content"]
     except (ValueError, KeyError, IndexError, TypeError):
+        observability.record_llm_call(label, elapsed(), ok=False, error="bad response")
         raise RuntimeError(f"大模型返回格式异常：{response.text[:200]}")
 
 
@@ -361,7 +395,11 @@ def analyze_data(filename: str, question: str):
     )
 
     try:
-        result = agent.invoke({"messages": [{"role": "user", "content": question}]})
+        result = agent.invoke(
+            {"messages": [{"role": "user", "content": question}]},
+            # 可观测性回调：捕获 Agent 内部每一次模型调用的耗时与 token
+            config={"callbacks": [observability.MetricsCallback("analyze")]},
+        )
     except Exception as e:
         return {"success": False, "error": f"智能体执行失败：{str(e)[:200]}"}
 
@@ -593,39 +631,40 @@ def rag_documents():
         return {"success": False, "error": str(e)}
 
 # 两阶段检索参数：先宽召回，再由大模型重排
-RECALL_K = 10   # 向量召回数量（宽召回，宁多勿漏）
+RECALL_K = 10    # 向量召回数量（候选越少，重排推理量越小）
 FINAL_K = 3     # 重排后真正喂给模型的片段数
 
-_RERANK_PROMPT = """你是检索结果重排器。下面有用户的提问和若干候选资料片段。
-请判断每个片段与提问的相关性，**只输出 JSON**，格式为 {{"ranked": [片段编号, ...]}}
 
-要求：
-1. ranked 按相关性从高到低排列，只保留能帮助回答提问的片段
-2. 最多保留 {top_n} 个
-3. 不要输出任何解释文字或 markdown 围栏
+
+# 两阶段检索参数：先宽召回，再由大模型重排
+_RERANK_PROMPT = """判断每段候选资料与用户提问的相关性，按相关性从高到低输出所有片段的编号。
+
+只输出编号，用英文逗号分隔，不要解释、不要换行。
+例如：2,7,0,5
 
 用户提问：{question}
 
-候选片段：
+候选资料：
 {snippets}
 """
 
 
 def _parse_ranked(raw, n):
-    """从模型输出里稳妥地取出 ranked 索引列表；取不到返回 None"""
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.strip("`")
-        if text[:4].lower() == "json":
-            text = text[4:]
+    """取出候选编号；兼容 '3,7,1' 与 {"ranked":[...]} 两种格式"""
+    text = (raw or "").strip()
+    if not text:
+        return []
     start, end = text.find("{"), text.rfind("}")
-    if start == -1 or end == -1:
-        return None
-    data = json.loads(text[start:end + 1])
-    ranked = data.get("ranked")
-    if not isinstance(ranked, list):
-        return None
-    return [i for i in ranked if isinstance(i, int) and 0 <= i < n]
+    if start != -1 and end != -1:
+        try:
+            ranked = json.loads(text[start:end + 1]).get("ranked")
+            if isinstance(ranked, list):
+                return [i for i in ranked if isinstance(i, int) and 0 <= i < n]
+        except Exception:
+            pass
+    # 退化处理：直接把输出里的数字当编号
+    nums = [int(x) for x in re.findall(r"\d+", text)]
+    return [i for i in nums if 0 <= i < n][:n]
 
 
 def rerank_documents(question, docs, top_n=FINAL_K):
@@ -637,21 +676,26 @@ def rerank_documents(question, docs, top_n=FINAL_K):
     docs = list(docs)
     if len(docs) <= 1:
         return docs[:top_n]
-    snippets = "\n\n".join(f"[{i}] {d.page_content[:300]}" for i, d in enumerate(docs))
+    snippets = "\n\n".join(f"[{i}] {d.page_content[:150]}" for i, d in enumerate(docs))
     try:
-        raw = call_ai(_RERANK_PROMPT.format(question=question, snippets=snippets, top_n=top_n))
+        raw = call_ai(_RERANK_PROMPT.format(question=question, snippets=snippets, top_n=top_n),
+                      label="rerank", no_thinking=True)
         order = _parse_ranked(raw, len(docs))
-        if not order:                      # 解析失败 或 模型认为都不相关
-            return docs[:top_n]            # → 保守回退到向量排序
+        if not order:
+            # 解析失败：记为失败指标，避免"表面正常、实际退化成向量排序"
+            observability.record_llm_call("rerank-fallback", 0, ok=False, error="解析失败，回退向量排序")
+            return docs[:top_n]
         return [docs[i] for i in order[:top_n]]
-    except Exception:
+    except Exception as e:
+        observability.record_llm_call("rerank-fallback", 0, ok=False, error=str(e)[:120])
         return docs[:top_n]
 
 class RagChatRequest(BaseModel):
     question: str
     session_id: str = "default"
-    # 限定只在某个文档里检索；None 表示在整个知识库检索
     source: str | None = None
+    # 是否启用 LLM 重排：精度更高，但每次多一次模型调用
+    use_rerank: bool = True
 
 
 _rag_system_prompt = (
@@ -696,7 +740,7 @@ def rag_chat(req: RagChatRequest):
                 query: 检索用的自然语言问题
             """
             candidates = wide_retriever.invoke(query)
-            docs = rerank_documents(query, candidates, top_n=FINAL_K)
+            docs = rerank_documents(query, candidates, top_n=FINAL_K) if req.use_rerank else candidates[:FINAL_K]
             collected["docs"] = [d.page_content for d in docs]
             if not docs:
                 return "知识库中没有检索到相关内容。"
@@ -711,8 +755,12 @@ def rag_chat(req: RagChatRequest):
 
         result = agent.invoke(
             {"messages": [{"role": "user", "content": req.question}]},
-            # thread_id 就是会话 ID：同一个 session_id 的多次提问共享上下文
-            config={"configurable": {"thread_id": req.session_id}},
+            config={
+                # thread_id 就是会话 ID：同一个 session_id 的多次提问共享上下文
+                "configurable": {"thread_id": req.session_id},
+                # 可观测性回调
+                "callbacks": [observability.MetricsCallback("rag")],
+            },
         )
 
         return {
@@ -722,3 +770,9 @@ def rag_chat(req: RagChatRequest):
         }
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+        # ==================== 可观测性：指标查询 ====================
+@app.get("/metrics")
+def get_metrics():
+    """大模型调用指标：次数 / token / 延迟（均值、P95）/ 估算成本"""
+    return observability.snapshot()
