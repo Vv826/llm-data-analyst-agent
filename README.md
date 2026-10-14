@@ -74,6 +74,7 @@ RAG 知识库链路
 7. **工程健壮性**：分块落盘 + 上传大小限制、DataFrame 缓存（按 mtime 校验）、路径穿越防御、NaN/Inf 归一化为 `null`、大模型调用超时与自动重试、docx 解析重名防御。
 8. **两阶段检索（向量宽召回 + LLM 重排）**：先召回 top-10，再由大模型重排取 top-3。关键是提示词设计 —— 要求模型"**给所有候选排序**"而不是"**筛选出前 3 段**"，后者会让模型丢掉相关片段；并对排序任务**关闭思考链**，单次重排从 94.8 秒降到 2.1 秒，答案完全一致。
 9. **大模型调用可观测性**：用 LangChain callback 捕获每一次底层模型调用的耗时与 token，聚合出调用次数 / 总 token / 平均与 P95 延迟 / 估算成本，经 `/metrics` 暴露并在前端展示，按 `analyze` / `rag` / `rerank` 分类统计；重排的回退分支也会上报失败指标，避免"静默降级"。
+10. **模型层可插拔**：`base_url` / `api_key` / `model` 全部配置化，换模型或供应商只改 `.env`；可为"检索重排"单独指定更轻量的模型。针对不同厂商"关闭思考链"参数名不一致的问题，做了**自动降级重试**（参数被拒就去掉它重试一次）。
 
 ## 效果评测
 
@@ -127,10 +128,15 @@ npm run dev
 
 | 环境变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `ARK_API_KEY` | 无（必填） | 火山方舟 API Key |
-| `ARK_MODEL` | 内置默认值 | 推理接入点 ID |
+| `LLM_BASE_URL` | 火山方舟地址 | OpenAI 兼容接口地址（换供应商只改这里） |
+| `LLM_API_KEY` | 无（必填） | API Key；未配置时自动回退到 `ARK_API_KEY` |
+| `LLM_MODEL` | 内置接入点 | 模型 / 接入点 ID；未配置时回退到 `ARK_MODEL` |
+| `RERANK_MODEL` | 同 `LLM_MODEL` | 可选：给检索重排单独指定更轻量的模型 |
+| `LLM_DISABLE_THINKING_JSON` | `{"thinking":{"type":"disabled"}}` | 关闭思考链的请求参数，留空则不发送 |
 | `MAX_UPLOAD_MB` | `200` | 单文件上传大小上限 |
 | `DF_CACHE_SIZE` | `3` | DataFrame 内存缓存条数 |
+
+> **模型层可插拔**：`LLM_BASE_URL` + `LLM_API_KEY` + `LLM_MODEL` 三项即可切到任意 OpenAI 兼容服务（DeepSeek、通义、智谱等）。火山方舟本身也聚合了 DeepSeek / 智谱的模型，切换时连 `base_url` 都不用改。
 
 ## 项目结构
 

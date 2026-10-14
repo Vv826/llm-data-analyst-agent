@@ -36,6 +36,21 @@ ONNXMiniLM_L6_V2.DOWNLOAD_PATH = (
 
 # ==================== 基础配置 ====================
 load_dotenv()
+
+# ==================== 大模型配置（模型层可插拔） ====================
+# 换模型 / 换供应商只需改 .env，代码不用动。兼容旧的 ARK_* 变量名。
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3").rstrip("/")
+LLM_API_KEY = os.getenv("LLM_API_KEY") or os.getenv("ARK_API_KEY", "")
+LLM_MODEL = os.getenv("LLM_MODEL") or os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt")
+# 排序/判断类任务可以换更轻量的模型来降本提速；不填则与主模型一致
+RERANK_MODEL = os.getenv("RERANK_MODEL") or LLM_MODEL
+# 关闭思考链的请求参数：各厂商字段名不同（通义是 enable_thinking），留空表示不发送；
+# 若厂商不接受该参数，call_ai 会自动去掉后重试一次。
+_NO_THINK_RAW = os.getenv("LLM_DISABLE_THINKING_JSON", '{"thinking": {"type": "disabled"}}')
+try:
+    NO_THINK_PARAMS = json.loads(_NO_THINK_RAW) if _NO_THINK_RAW.strip() else {}
+except ValueError:
+    NO_THINK_PARAMS = {}
 app = FastAPI(title="AI智能应用平台")
 
 # 跨域配置
@@ -182,16 +197,15 @@ _llm = None
 
 
 def get_llm():
-    """懒加载大模型客户端（LangChain ChatOpenAI，对接火山方舟 OpenAI 兼容接口）"""
+    """懒加载大模型客户端（LangChain ChatOpenAI，对接任意 OpenAI 兼容接口）"""
     global _llm
     if _llm is None:
-        api_key = os.getenv("ARK_API_KEY")
-        if not api_key:
-            raise RuntimeError("未配置 ARK_API_KEY，请在项目根目录的 .env 中填写后重启后端")
+        if not LLM_API_KEY:
+            raise RuntimeError("未配置 LLM_API_KEY（或 ARK_API_KEY），请在项目根目录的 .env 中填写后重启后端")
         _llm = ChatOpenAI(
-            model=os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt"),
-            api_key=api_key,
-            base_url="https://ark.cn-beijing.volces.com/api/v3",
+            model=LLM_MODEL,
+            api_key=LLM_API_KEY,
+            base_url=LLM_BASE_URL,
             temperature=0.1,
             timeout=120,
             max_retries=2,
@@ -199,21 +213,20 @@ def get_llm():
     return _llm
 
 
-def call_ai(prompt: str, label: str = "chat", no_thinking: bool = False):
-    """调用豆包聊天大模型（带耗时 / token / 成本埋点）"""
-    api_key = os.getenv("ARK_API_KEY")
-    if not api_key:
-        raise RuntimeError("未配置 ARK_API_KEY，请在项目根目录的 .env 中填写后重启后端")
+def call_ai(prompt: str, label: str = "chat", no_thinking: bool = False, model: str | None = None):
+    """调用大模型（带耗时 / token / 成本埋点；支持任意 OpenAI 兼容接口）"""
+    if not LLM_API_KEY:
+        raise RuntimeError("未配置 LLM_API_KEY（或 ARK_API_KEY），请在项目根目录的 .env 中填写后重启后端")
 
-    url = "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+    url = f"{LLM_BASE_URL}/chat/completions"
 
     headers = {
-        "Authorization": f"Bearer {api_key}",
+        "Authorization": f"Bearer {LLM_API_KEY}",
         "Content-Type": "application/json"
     }
 
     data = {
-        "model": os.getenv("ARK_MODEL", "ep-20261008111305-gwhdt"),
+        "model": model or LLM_MODEL,
         "messages": [
             {"role": "system", "content": "你是一个数据分析专家，严格按照要求的格式输出。"},
             {"role": "user", "content": prompt}
@@ -222,24 +235,38 @@ def call_ai(prompt: str, label: str = "chat", no_thinking: bool = False):
     }
 
     # 重排这类"判断/排序"任务不需要思考链：实测开启思考要 94.8s、烧掉 7900+ reasoning token，
-    # 关闭后只需 2.5s，且答案完全一致
-    if no_thinking:
-        data["thinking"] = {"type": "disabled"}
+    # 关闭后只需 2.5s，且答案完全一致。字段名因厂商而异，见 NO_THINK_PARAMS。
+    extra = dict(NO_THINK_PARAMS) if no_thinking else {}
+    data.update(extra)
 
     t0 = time.perf_counter()
 
     def elapsed():
         return (time.perf_counter() - t0) * 1000
 
-    try:
-        # (连接超时, 读取超时)：上游不响应时不至于把请求永久挂住
-        response = requests.post(url, headers=headers, json=data, timeout=(10, 120))
-    except requests.exceptions.Timeout:
+    def post():
+        """发一次请求；返回 (响应, 错误标记)"""
+        try:
+            # (连接超时, 读取超时)：上游不响应时不至于把请求永久挂住
+            return requests.post(url, headers=headers, json=data, timeout=(10, 120)), None
+        except requests.exceptions.Timeout:
+            return None, "timeout"
+        except requests.exceptions.RequestException as e:
+            return None, str(e)
+
+    response, err = post()
+    # 有些厂商（尤其第三方模型）不认识"关闭思考"的参数，会返回 4xx —— 去掉该参数重试一次
+    if response is not None and response.status_code >= 400 and extra:
+        for k in extra:
+            data.pop(k, None)
+        response, err = post()
+
+    if err == "timeout":
         observability.record_llm_call(label, elapsed(), ok=False, error="timeout")
         raise RuntimeError("调用大模型超时，请稍后重试")
-    except requests.exceptions.RequestException as e:
-        observability.record_llm_call(label, elapsed(), ok=False, error=str(e))
-        raise RuntimeError(f"调用大模型失败：{str(e)[:120]}")
+    if err:
+        observability.record_llm_call(label, elapsed(), ok=False, error=err)
+        raise RuntimeError(f"调用大模型失败：{err[:120]}")
 
     if response.status_code != 200:
         observability.record_llm_call(label, elapsed(), ok=False, error=f"HTTP {response.status_code}")
@@ -679,7 +706,7 @@ def rerank_documents(question, docs, top_n=FINAL_K):
     snippets = "\n\n".join(f"[{i}] {d.page_content[:150]}" for i, d in enumerate(docs))
     try:
         raw = call_ai(_RERANK_PROMPT.format(question=question, snippets=snippets, top_n=top_n),
-                      label="rerank", no_thinking=True)
+                      label="rerank", no_thinking=True, model=RERANK_MODEL)
         order = _parse_ranked(raw, len(docs))
         if not order:
             # 解析失败：记为失败指标，避免"表面正常、实际退化成向量排序"
