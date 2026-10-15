@@ -7,6 +7,7 @@
 1. LangChain 的 ChatOpenAI —— 通过 MetricsCallback 挂在 config["callbacks"] 上
 2. 裸 requests 调用（重排器）—— 直接调 record_llm_call
 """
+import os
 import statistics
 import threading
 import time
@@ -17,6 +18,11 @@ from langchain_core.callbacks import BaseCallbackHandler
 # 单价（元 / 百万 token）—— 按你实际的方舟计费改这里
 PRICE_INPUT_PER_M = 0.8
 PRICE_OUTPUT_PER_M = 2.0
+
+# ---- 告警阈值（可用环境变量覆盖，见 .env.example）----
+ALERT_LATENCY_MS = float(os.getenv("ALERT_LATENCY_MS", "60000"))   # 单次调用耗时上限
+ALERT_FAIL_RATE = float(os.getenv("ALERT_FAIL_RATE", "0.2"))       # 失败率上限
+ALERT_TOKENS = int(os.getenv("ALERT_TOKENS", "200000"))            # 累计 token 预算
 
 MAX_RECORDS = 300
 _records = deque(maxlen=MAX_RECORDS)
@@ -50,13 +56,63 @@ def percentile(values, p):
     s = sorted(values)
     return s[min(len(s) - 1, int(round(p / 100 * (len(s) - 1))))]
 
+def evaluate_alerts(stats):
+    """根据聚合指标判定告警。
+
+    只做「判定」，不做「推送」—— 通知渠道（钉钉 / webhook）属于外层系统，
+    这里保证告警状态能被 /metrics 和前端读到。
+    统计口径是当前进程内存缓冲里的全部记录（最多 MAX_RECORDS 条）。
+    """
+    alerts = []
+    calls = stats.get("calls") or 0
+    if calls == 0:
+        return alerts
+
+    max_lat = stats.get("max_latency_ms") or 0
+    if max_lat > ALERT_LATENCY_MS:
+        alerts.append({
+            "level": "warning",
+            "code": "slow_call",
+            "message": f"最慢一次模型调用 {max_lat:.0f} ms，超过阈值 {ALERT_LATENCY_MS:.0f} ms",
+        })
+
+    failed = stats.get("failed") or 0
+    fail_rate = failed / calls
+    if fail_rate > ALERT_FAIL_RATE:
+        alerts.append({
+            "level": "error",
+            "code": "high_fail_rate",
+            "message": f"调用失败率 {fail_rate:.1%}（{failed}/{calls}），超过阈值 {ALERT_FAIL_RATE:.0%}",
+        })
+
+    tokens = stats.get("total_tokens") or 0
+    if tokens > ALERT_TOKENS:
+        alerts.append({
+            "level": "warning",
+            "code": "token_budget",
+            "message": f"累计消耗 {tokens} tokens，超过预算 {ALERT_TOKENS}",
+        })
+
+    return alerts
+
+
+def thresholds():
+    """当前生效的告警阈值（供前端展示）"""
+    return {
+        "max_latency_ms": ALERT_LATENCY_MS,
+        "fail_rate": ALERT_FAIL_RATE,
+        "tokens": ALERT_TOKENS,
+    }
+
+
 
 def snapshot():
     """聚合指标（供 /metrics 使用）"""
     with _lock:
         recs = list(_records)
     if not recs:
-        return {"calls": 0, "total_tokens": 0, "total_cost": 0, "by_label": {}, "recent": []}
+        return {"calls": 0, "total_tokens": 0, "total_cost": 0, "by_label": {},
+                "recent": [], "alerts": [], "thresholds": thresholds()}
 
     lat = [r["latency_ms"] for r in recs]
     by_label = {}
@@ -67,7 +123,7 @@ def snapshot():
         b["cost"] = round(b["cost"] + r["cost"], 6)
         b["latency_ms"] = round(b["latency_ms"] + r["latency_ms"], 1)
 
-    return {
+    stats = {
         "calls": len(recs),
         "failed": sum(1 for r in recs if not r["ok"]),
         "total_input_tokens": sum(r["input_tokens"] for r in recs),
@@ -80,6 +136,10 @@ def snapshot():
         "by_label": by_label,
         "recent": recs[-8:],
     }
+    # 在同一个 snapshot 上做告警判定：前端一次请求就能同时拿到指标与告警
+    stats["alerts"] = evaluate_alerts(stats)
+    stats["thresholds"] = thresholds()
+    return stats
 
 
 def reset():
