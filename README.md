@@ -1,5 +1,7 @@
 # AI 智能应用平台
 
+[![tests](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/test.yml/badge.svg)](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/test.yml)
+
 基于大模型的一站式 AI 应用平台，包含「自然语言数据分析智能体」与「RAG 知识库问答」两大模块。
 后端 FastAPI，前端 React，智能体编排基于 LangChain / LangGraph。
 
@@ -256,7 +258,10 @@ npm run dev
 venv\Scripts\python.exe -m pytest -q
 ```
 
-45 个单元测试用例，**全部不调用大模型**，约 11 秒跑完（不需要 API Key 也能跑）。
+70 个单元测试用例，**全部不调用大模型**，约 3 秒跑完（不需要 API Key 也能跑）。
+
+CI 环境（GitHub Actions）没有本地的嵌入模型与向量库，因此通过 `KB_DISABLED=1` 显式关闭知识库，
+依赖知识库的 3 个用例会**自动跳过**（`requires_kb` 标记），其余 67 个照常执行 —— 见 `.github/workflows/test.yml`。
 
 ## 配置项
 

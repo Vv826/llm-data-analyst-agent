@@ -5,6 +5,7 @@
 from fastapi.testclient import TestClient
 
 import main
+import pytest
 
 client = TestClient(main.app)
 
@@ -21,7 +22,7 @@ def test_metrics_shape():
     assert "calls" in body
     assert "total_tokens" in body
 
-
+@pytest.mark.requires_kb
 def test_rag_documents_lists_sources():
     r = client.get("/rag/documents")
     assert r.status_code == 200

@@ -553,15 +553,21 @@ class ChromaONNXEmbeddings(Embeddings):
 
 
 _kb_init_error = ""
-try:
-    vectorstore = Chroma(
-        collection_name="knowledge_base",
-        embedding_function=ChromaONNXEmbeddings(),
-        persist_directory=CHROMA_PATH,
-    )
-except Exception as e:
+if os.getenv("KB_DISABLED") == "1":
+    # 显式关闭知识库：CI 环境没有本地嵌入模型与向量库（都被 gitignore），
+    # 关掉后 import 更快、行为也更确定；依赖知识库的测试会自动跳过
     vectorstore = None
-    _kb_init_error = str(e)
+    _kb_init_error = "已通过环境变量 KB_DISABLED=1 禁用"
+else:
+    try:
+        vectorstore = Chroma(
+            collection_name="knowledge_base",
+            embedding_function=ChromaONNXEmbeddings(),
+            persist_directory=CHROMA_PATH,
+        )
+    except Exception as e:
+        vectorstore = None
+        _kb_init_error = str(e)
 
 # 会话记忆：必须放在模块级，跨请求共享，否则每次请求都"失忆"
 # 用 SQLite 持久化 —— 重启服务后对话记录依然在。

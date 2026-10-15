@@ -2,6 +2,7 @@
 import os
 import sqlite3
 
+import pytest
 import main
 
 
@@ -42,11 +43,13 @@ class TestPersistentMemory:
 class TestKnowledgeBaseMetadataTool:
     """对应开发笔记里的那个 bug：模型曾把 6 份文档说成 2 份"""
 
+    @pytest.mark.requires_kb
     def test_lists_every_document(self):
         listed = main.build_list_documents_tool().invoke({})
         for d in main.rag_documents()["documents"]:
             assert d["source"] in listed
 
+    @pytest.mark.requires_kb
     def test_reports_correct_total(self):
         listed = main.build_list_documents_tool().invoke({})
         total = len(main.rag_documents()["documents"])
