@@ -17,6 +17,10 @@
 
 ![多智能体协同](docs/screenshot-3-multi.png)
 
+**AI 代码生成（受限执行）**
+
+![代码生成](docs/screenshot-4-code.png)
+
 ## 核心功能
 
 ### 模块一：AI 自助数据分析（Agent 模式）
@@ -315,6 +319,8 @@ ai-data-project/
 10. **SQLite 连接与 FastAPI 线程池不兼容**：做会话记忆持久化时，`SqliteSaver` 需要一个 `sqlite3.Connection`，而 Python 的 SQLite 连接**默认绑定创建它的线程**；FastAPI 的同步接口跑在线程池里，请求落在别的线程就会抛 `SQLite objects created in a thread can only be used in that same thread`。解法是 `sqlite3.connect(path, check_same_thread=False)`。另外 `SqliteSaver.from_conn_string()` 是个**上下文管理器**（退出即关连接），长期服务要用**直接构造** `SqliteSaver(conn)` 并显式调用一次 `setup()` 建表。
 11. **国内网络拉 Docker 基础镜像会卡在认证**：`docker compose build` 报 `failed to fetch oauth token: Post "https://auth.docker.io/token" ... 超时`，而且日志里是一个 **IPv6 地址**（大概率本机没有可用 IPv6）。解法是给 `FROM` 加国内镜像源前缀（`docker.m.daocloud.io/library/...`），或在 Docker Desktop 里配 `registry-mirrors`。
 12. **容器里 pip 报 `from versions: none` 是**误导性错误**：构建时 `pip install` 明明能从阿里云源下到 fastapi/uvicorn，却在 `pandas==3.0.6` 上报 `Could not find a version that satisfies the requirement ... (from versions: none)`。查证后发现**源上明明有该版本的 manylinux cp312 wheel** —— 真正原因是 pandas 的索引页太大（300+ 版本 / 几千个文件），容器网络在拉取这个大页面时超时，pip 便解析成"没有任何版本"。解法：`PIP_DEFAULT_TIMEOUT=180` + `PIP_RETRIES=10` + 先升级 pip。**教训：报错信息说的是"找不到版本"，但根因是网络超时 —— 不能只看字面。**
+13. **VPN 开着，git 却连不上 GitHub**：Windows 系统代理已开启（`ProxyServer = 127.0.0.1:7897`，Clash 系默认端口），浏览器访问 GitHub 正常，但 `git push` 报 `Failed to connect to github.com:443 ... Could not connect to server`。原因是**系统代理只对读取 WinINET 设置的程序生效，git 不读** —— git 用 libcurl，只认自己的 `http.proxy` 配置和 `HTTP_PROXY`/`HTTPS_PROXY` 环境变量。解法：`git config --global http.proxy http://127.0.0.1:7897`（https 同理）。
+14. **诊断教训：查端口别只信 `Get-NetTCPConnection`**：在受限环境里它可能返回空结果，让人误判"代理根本没在监听"，从而找错方向；`netstat -ano` 才准确（`TCP 127.0.0.1:7897 LISTENING`）。**工具不可靠时要换一个交叉验证。**
 
 ## License
 
