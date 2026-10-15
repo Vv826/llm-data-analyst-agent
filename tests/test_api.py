@@ -53,3 +53,32 @@ def test_multi_agent_rejects_missing_file():
     body = r.json()
     assert body["success"] is False
     assert "不存在" in body["error"]
+
+
+# ---------- AI 代码生成：受限执行（不调用大模型） ----------
+
+def test_code_run_executes_safe_code():
+    csv = "城市,销售额\n北京,100\n上海,200\n北京,300\n".encode("utf-8")
+    client.post("/upload", files={"file": ("pytest_code.csv", csv)})
+    r = client.post("/code/run", json={
+        "filename": "pytest_code.csv",
+        "code": "print(df['销售额'].sum())",
+    })
+    body = r.json()
+    assert body["success"] is True
+    assert "600" in body["output"]
+
+
+def test_code_run_rejects_dangerous_code():
+    """接口层必须再次校验 —— 不信任前端传来的代码（纵深防御）"""
+    csv = "a\n1\n".encode("utf-8")
+    client.post("/upload", files={"file": ("pytest_code2.csv", csv)})
+    r = client.post("/code/run", json={"filename": "pytest_code2.csv", "code": "import os"})
+    body = r.json()
+    assert body["success"] is False
+    assert "安全检查" in body["error"]
+
+
+def test_code_run_rejects_missing_file():
+    r = client.post("/code/run", json={"filename": "不存在的表.csv", "code": "print(1)"})
+    assert r.json()["success"] is False
