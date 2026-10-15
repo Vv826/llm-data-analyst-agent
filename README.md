@@ -1,9 +1,17 @@
 # AI 智能应用平台
 
 [![tests](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/test.yml/badge.svg)](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/test.yml)
+[![docker](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/docker.yml/badge.svg)](https://github.com/Vv826/llm-data-analyst-agent/actions/workflows/docker.yml)
+![coverage](https://img.shields.io/badge/coverage-56%25-1f2937?style=flat-square)
+![Python](https://img.shields.io/badge/Python-3.12-1f2937?style=flat-square&logo=python&logoColor=white)
+![LangChain](https://img.shields.io/badge/LangChain%201.4%20%2F%20LangGraph%201.2-1f2937?style=flat-square)
+![Docker](https://img.shields.io/badge/Docker%20Compose-ready-1f2937?style=flat-square&logo=docker&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-1f2937?style=flat-square)
 
-基于大模型的一站式 AI 应用平台，包含「自然语言数据分析智能体」与「RAG 知识库问答」两大模块。
-后端 FastAPI，前端 React，智能体编排基于 LangChain / LangGraph。
+基于大模型的一站式数据与文档智能处理平台，包含自然语言数据分析 Agent、RAG 知识库问答、多智能体协同、AI 代码生成四大模块。
+后端 FastAPI + LangChain/LangGraph（原生 tool calling + `StateGraph` 多智能体），前端 React 19 + Ant Design，
+向量检索基于 ChromaDB 与本地 ONNX 嵌入模型。项目配套检索评测体系、可观测性告警、MCP Server 标准化输出、
+70 个单元测试、GitHub Actions CI 与 Docker 一键部署。
 
 ## 界面预览
 
@@ -217,6 +225,7 @@ docker compose up -d
 - 后端接口文档：http://localhost:8000/docs
 - 首次构建约 10 分钟（下载基础镜像 + 安装依赖），之后启动只需几秒
 - `uploads/`、`chroma_db/`、`models/`、`data/` 都通过**卷挂载**，容器重建数据不丢，嵌入模型也不用在容器里重新下载
+- 推送到 main 时，CI 会自动构建两个镜像验证 Dockerfile（`.github/workflows/docker.yml`）
 
 > ⚠️ **国内网络注意**：两个 Dockerfile 的基础镜像都加了国内镜像源前缀（`docker.m.daocloud.io/library/`），否则会卡在 `auth.docker.io` 认证超时。想换回官方源，把该前缀删掉即可。
 
@@ -260,8 +269,14 @@ venv\Scripts\python.exe -m pytest -q
 
 70 个单元测试用例，**全部不调用大模型**，约 3 秒跑完（不需要 API Key 也能跑）。
 
+**覆盖率约 56%** —— `codegen.py` 100%、`observability.py` 88%、`main.py` 48%（后者大量接口需要大模型，无法单测）。
+CI 用 `--cov-fail-under=50` 做**覆盖率门槛**：跌破 50% 会直接让流水线变红。
+
 CI 环境（GitHub Actions）没有本地的嵌入模型与向量库，因此通过 `KB_DISABLED=1` 显式关闭知识库，
 依赖知识库的 3 个用例会**自动跳过**（`requires_kb` 标记），其余 67 个照常执行 —— 见 `.github/workflows/test.yml`。
+
+> 徽章里的覆盖率是**快照值**；真实数值由 CI 每次统计并强制门槛。想要自动更新的徽章可接入 Codecov。
+> 另外 `.github/workflows/docker.yml` 会在推送到 main 时**自动构建两个镜像**，用来验证 Dockerfile 没被改坏。
 
 ## 配置项
 

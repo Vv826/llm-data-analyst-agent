@@ -3,6 +3,10 @@ venv/
 __pycache__/
 *.pyc
 .pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
 
 # 前端依赖与构建产物
 frontend/node_modules/
