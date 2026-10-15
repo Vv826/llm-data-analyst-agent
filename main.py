@@ -930,6 +930,7 @@ def _multi_plan(state):
 def _multi_data_expert(state):
     """② 专家一：数据分析（复用现有 5 个工具）"""
     t0 = time.perf_counter()
+    wall_start = time.time()
     file_path = os.path.join(UPLOAD_DIR, safe_filename(state["filename"]))
     df = load_dataframe(file_path)
     captured = {"data": None}
@@ -954,6 +955,8 @@ def _multi_data_expert(state):
     return {"findings": [{
         "agent": "data", "title": "数据分析专家", "content": answer,
         "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        "wall_start": round(wall_start, 3),
+        "wall_end": round(time.time(), 3),
         "file": state["filename"],
     }]}
 
@@ -961,6 +964,7 @@ def _multi_data_expert(state):
 def _multi_kb_expert(state):
     """③ 专家二：知识库检索（复用 RAG 两阶段检索）"""
     t0 = time.perf_counter()
+    wall_start = time.time()
     captured = {"docs": []}
     agent = create_agent(
         model=get_llm(),
@@ -975,38 +979,43 @@ def _multi_kb_expert(state):
         "agent": "kb", "title": "知识库专家",
         "content": result["messages"][-1].content,
         "elapsed_ms": round((time.perf_counter() - t0) * 1000),
+        "wall_start": round(wall_start, 3),
+        "wall_end": round(time.time(), 3),
         "docs": captured["docs"],
     }]}
 
 
 def _multi_summarize(state):
     """④ 汇总：融合各专家结论（只有一位专家时省掉这次调用）"""
-    findings = state.get("findings") or []
+    findings = sorted(state.get("findings") or [], key=lambda f: f.get("agent", ""))
     if not findings:
         return {"answer": "抱歉，没有可用的资源来回答这个问题。"}
     if len(findings) == 1:
         return {"answer": findings[0]["content"]}
     blocks = "\n\n".join(f"【{f['title']}】\n{f['content']}" for f in findings)
+    # 汇总任务是"忠实合并"而不是"推理"，关掉思考链可大幅降低延迟（与重排同理）
     answer = call_ai(_MULTI_SUMMARY_PROMPT.format(question=state["question"], findings=blocks),
-                     label="multi/summary")
+                     label="multi/summary", no_thinking=True)
     return {"answer": answer}
 
 
 def _route_after_plan(state):
+    """返回**列表**表示让这些专家节点并行执行（LangGraph 的 fan-out）。
+
+    能安全并行的前提是 MultiState.findings 用了 Annotated[list, operator.add] 这个
+    reducer —— 两个节点同时追加结果时，reducer 会把它们合并，而不是互相覆盖。
+    """
     agents = state.get("plan") or []
+    targets = []
     if "data" in agents:
-        return "data_expert"
+        targets.append("data_expert")
     if "kb" in agents:
-        return "kb_expert"
-    return "summarize"
-
-
-def _route_after_data(state):
-    return "kb_expert" if "kb" in (state.get("plan") or []) else "summarize"
+        targets.append("kb_expert")
+    return targets or ["summarize"]
 
 
 def build_multi_agent():
-    """构建 Supervisor 图：规划 → 专家（串行，可多个）→ 汇总"""
+    """构建 Supervisor 图：规划 → 专家（可并行）→ 汇总"""
     g = StateGraph(MultiState)
     g.add_node("plan", _multi_plan)
     g.add_node("data_expert", _multi_data_expert)
@@ -1014,8 +1023,10 @@ def build_multi_agent():
     g.add_node("summarize", _multi_summarize)
 
     g.add_edge(START, "plan")
+    # 规划节点可以同时触发多个专家（返回列表即 fan-out）：
+    # 两个专家并行跑，都完成之后才会进入 summarize（fan-in）
     g.add_conditional_edges("plan", _route_after_plan, ["data_expert", "kb_expert", "summarize"])
-    g.add_conditional_edges("data_expert", _route_after_data, ["kb_expert", "summarize"])
+    g.add_edge("data_expert", "summarize")
     g.add_edge("kb_expert", "summarize")
     g.add_edge("summarize", END)
     return g.compile()
@@ -1061,7 +1072,7 @@ def multi_analyze(req: MultiRequest):
     return {
         "success": True,
         "plan": state.get("plan") or [],
-        "findings": state.get("findings") or [],
+        "findings": sorted(state.get("findings") or [], key=lambda f: f.get("agent", "")),
         "answer": state.get("answer") or "",
         "elapsed_ms": round((time.perf_counter() - t0) * 1000),
     }
