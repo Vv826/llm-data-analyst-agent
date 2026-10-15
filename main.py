@@ -7,6 +7,7 @@ import math
 import pandas as pd
 import os
 import requests
+import sqlite3
 import tempfile
 import time
 import re
@@ -26,6 +27,7 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_core.documents import Document
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite import SqliteSaver
 import operator
 from typing import Annotated, TypedDict
 from langgraph.graph import StateGraph, START, END
@@ -561,7 +563,17 @@ except Exception as e:
     _kb_init_error = str(e)
 
 # 会话记忆：必须放在模块级，跨请求共享，否则每次请求都"失忆"
-_rag_checkpointer = InMemorySaver()
+# 用 SQLite 持久化 —— 重启服务后对话记录依然在。
+# check_same_thread=False 是必须的：FastAPI 的同步接口跑在线程池里，
+# 不同请求可能落在不同线程，而 SQLite 连接默认只允许创建它的线程使用。
+CHAT_DB_PATH = os.getenv("CHAT_DB_PATH") or os.path.join(BASE_DIR, "chat_memory.sqlite3")
+try:
+    _chat_conn = sqlite3.connect(CHAT_DB_PATH, check_same_thread=False)
+    _rag_checkpointer = SqliteSaver(_chat_conn)
+    _rag_checkpointer.setup()          # 建表（checkpoints / writes），幂等可重复调用
+except Exception:
+    # 持久化不可用时退回内存记忆，保证服务仍能启动
+    _rag_checkpointer = InMemorySaver()
 
 
 def kb_unavailable():
@@ -720,6 +732,37 @@ def rerank_documents(question, docs, top_n=FINAL_K):
         observability.record_llm_call("rerank-fallback", 0, ok=False, error=str(e)[:120])
         return docs[:top_n]
 
+def build_list_documents_tool():
+    """知识库的"元数据"工具：列出真实文档清单。
+
+    为什么单独做一个工具：向量检索只能捞回 top-N 片段，模型会拿这几个片段
+    反推"知识库一共几份文档"，从而过度概括（实测它把 6 份说成 2 份）。
+    元数据类问题应当由工具直接给准确答案，而不是让检索去猜。
+    """
+
+    @tool("list_knowledge_documents", parse_docstring=True)
+    def list_knowledge_documents() -> str:
+        """列出知识库里已有的全部文档及其片段数。
+
+        当用户询问"知识库里有哪些文档 / 有什么资料 / 一共几份文档"时使用本工具。
+        """
+        if vectorstore is None:
+            return "知识库不可用。"
+        data = vectorstore.get(include=["metadatas"])
+        counts = {}
+        for meta in data.get("metadatas") or []:
+            src = (meta or {}).get("source")
+            if src:
+                counts[src] = counts.get(src, 0) + 1
+        if not counts:
+            return "知识库还是空的，还没有上传任何文档。"
+        lines = [f"- {s}（{n} 个片段）" for s, n in sorted(counts.items())]
+        return f"知识库中共有 {len(counts)} 份文档：\n" + "\n".join(lines)
+
+    return list_knowledge_documents
+
+
+
 def build_retriever_tool(captured, source=None, use_rerank=True):
     """构建 RAG 检索工具（两阶段：向量宽召回 + LLM 重排）。
 
@@ -761,12 +804,14 @@ _rag_system_prompt = (
     "1. 知识库里已经上传了文档。用户问“这份文档/这份文件/这个项目讲了什么”时，"
     "“这份/这个”指的就是知识库里的文档（若系统限定了检索范围，就是那份文档），"
     "必须直接调用 search_knowledge_base 检索，然后基于检索结果回答；不要反问“是哪份文档”。\n"
-    "2. 只要问题涉及知识库内容，都先检索，再严格基于检索结果回答，不要编造。\n"
-    "3. 检索到的资料必须与问题主题相关才可使用。如果检索结果与用户问的主题**无关**"
+    "2. 用户问“知识库里有哪些文档 / 有什么资料 / 一共几份文档”时，"
+    "必须调用 list_knowledge_documents 拿真实清单，**不要用检索到的几个片段反推文档总数**。\n"
+    "3. 只要问题涉及知识库内容，都先检索，再严格基于检索结果回答，不要编造。\n"
+    "4. 检索到的资料必须与问题主题相关才可使用。如果检索结果与用户问的主题**无关**"
     "（例如问的是 A 主题、检索到的却是 B 主题的资料），直接回答“知识库中没有与 XXX 相关的内容”，"
     "**绝不能用无关资料拼凑答案**。\n"
-    "4. 只有用户明确询问对话本身（如“我刚才问的是什么”）时才不检索，直接结合上下文回答。\n"
-    "5. 回答用中文。\n"
+    "5. 只有用户明确询问对话本身（如“我刚才问的是什么”）时才不检索，直接结合上下文回答。\n"
+    "6. 回答用中文。\n"
 )
 
 
@@ -785,7 +830,7 @@ def rag_chat(req: RagChatRequest):
 
         agent = create_agent(
             model=get_llm(),
-            tools=[search_tool],
+            tools=[search_tool, build_list_documents_tool()],
             checkpointer=_rag_checkpointer,
             system_prompt=_rag_system_prompt,
         )
@@ -918,7 +963,7 @@ def _multi_kb_expert(state):
     captured = {"docs": []}
     agent = create_agent(
         model=get_llm(),
-        tools=[build_retriever_tool(captured)],
+        tools=[build_retriever_tool(captured), build_list_documents_tool()],
         system_prompt=_rag_system_prompt,
     )
     result = agent.invoke(

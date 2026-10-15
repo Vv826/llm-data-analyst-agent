@@ -42,6 +42,7 @@ langchain-openai==1.7.0            # ChatOpenAI，对接火山方舟 OpenAI 兼�
 langchain-text-splitters==1.1.3    # RecursiveCharacterTextSplitter
 langchain-chroma==1.1.0            # Chroma 向量库集成
 langgraph==1.2.14                  # create_agent 的运行时 + checkpointer
+langgraph-checkpoint-sqlite==3.1.2 # 会话记忆持久化（SqliteSaver，重启不丢对话）
 
 # ---- MCP（把工具暴露给任意 MCP 客户端）----
 # 2.x 版：FastMCP 已改名为 MCPServer，导入路径是 mcp.server.mcpserver
@@ -49,5 +50,5 @@ langgraph==1.2.14                  # create_agent 的运行时 + checkpointer
 mcp==2.3.0
 
 # ---- 测试 ----
-# 31 个用例，全部不依赖大模型（秒级完成，可进 CI）
+# 45 个用例，全部不依赖大模型（秒级完成，可进 CI）
 pytest==9.1.1
