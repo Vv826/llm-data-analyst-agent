@@ -1,0 +1,17 @@
+venv/
+frontend/node_modules/
+frontend/dist/
+models/
+chroma_db/
+uploads/
+docs/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+*.sqlite3
+chat_memory.sqlite3*
+.env
+.git/
+.gitignore
+*.log

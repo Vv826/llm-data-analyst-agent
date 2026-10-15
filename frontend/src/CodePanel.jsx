@@ -9,7 +9,7 @@ import {
 } from '@ant-design/icons'
 import axios from 'axios'
 
-const API = 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 const EXAMPLES = [
   '计算每一列的总和',

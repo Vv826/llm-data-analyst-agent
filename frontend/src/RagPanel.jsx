@@ -13,7 +13,7 @@ import axios from 'axios'
 const { TextArea } = Input
 
 // 与数据分析页共用同一个后端
-const API = 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 export default function RagPanel() {
   const [doc, setDoc] = useState(null)            // { filename, chunks }

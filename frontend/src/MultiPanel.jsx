@@ -10,7 +10,7 @@ import {
 } from '@ant-design/icons'
 import axios from 'axios'
 
-const API = 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 // 专家的展示信息（与后端 /multi/analyze 返回的 plan 字段对齐）
 const AGENT_META = {

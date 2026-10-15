@@ -11,6 +11,7 @@ frontend/dist/
 # 本地数据文件
 uploads/
 chroma_db/
+data/
 chat_memory.sqlite3
 chat_memory.sqlite3-shm
 chat_memory.sqlite3-wal

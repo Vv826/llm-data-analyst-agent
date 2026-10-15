@@ -27,6 +27,7 @@ import {
   RocketOutlined,
 } from '@ant-design/icons'
 import axios from 'axios'
+const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 import ReactECharts from 'echarts-for-react'
 import RagPanel from './RagPanel'
 import MetricsBar from './MetricsBar'
@@ -104,7 +105,7 @@ function App() {
     const formData = new FormData()
     formData.append('file', file)
     try {
-      const res = await axios.post('http://127.0.0.1:8000/upload', formData)
+      const res = await axios.post(`${API}/upload`, formData)
       // 后端解析失败时返回的是 HTTP 200 + success:false；
       // 不判断的话 dataQuality 里没有 column_names，渲染时会把整个页面搞白屏
       if (res.data?.success === false) {
@@ -134,7 +135,7 @@ function App() {
     }
     setLoading(true)
     try {
-      const res = await axios.post('http://127.0.0.1:8000/analyze', null, {
+      const res = await axios.post(`${API}/analyze`, null, {
         params: { filename: fileName, question: question }
       })
       setAnalyzeResult(res.data)

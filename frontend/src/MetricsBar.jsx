@@ -3,7 +3,7 @@ import { Tag } from 'antd'
 import { DashboardOutlined, WarningOutlined } from '@ant-design/icons'
 import axios from 'axios'
 
-const API = 'http://127.0.0.1:8000'
+const API = import.meta.env.VITE_API_BASE || 'http://127.0.0.1:8000'
 
 // 告警 code → 简短标签（完整信息放在 title 里，鼠标悬停可见）
 const ALERT_LABEL = {

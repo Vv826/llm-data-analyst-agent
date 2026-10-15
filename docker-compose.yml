@@ -1,0 +1,29 @@
+services:
+  backend:
+    build: .
+    container_name: ai-platform-backend
+    env_file: .env                 # 复用你本地的 API Key 配置
+    environment:
+      # 会话记忆库放到挂载目录里，容器重建也不丢
+      CHAT_DB_PATH: /app/data/chat_memory.sqlite3
+    ports:
+      - "8000:8000"
+    volumes:
+      # 这几个目录挂出来：数据不随容器销毁而丢失，嵌入模型也不用在容器里重新下载
+      - ./uploads:/app/uploads
+      - ./chroma_db:/app/chroma_db
+      - ./models:/app/models
+      - ./data:/app/data
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_BASE: /api
+    container_name: ai-platform-frontend
+    ports:
+      - "5173:80"                  # 浏览器访问 http://localhost:5173
+    depends_on:
+      - backend
+    restart: unless-stopped

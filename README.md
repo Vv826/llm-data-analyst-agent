@@ -86,6 +86,7 @@ venv\Scripts\python.exe mcp_smoke_test.py   # 端到端自测：握手 → 列�
 | 数据处理 | pandas 3.0 + numpy + openpyxl + chardet（自动探测 CSV 编码） |
 | 文档解析 | pypdf（PDF）、python-docx（Word） |
 | 工具协议 | MCP 2.3（`MCPServer`，stdio 传输）—— 7 个工具开放给任意 MCP 客户端 |
+| 部署 | Docker Compose：后端 Python 镜像 + 前端**多阶段构建**（Node 编译 → Nginx 托管，镜像约 50MB） |
 | 前端 | React 19 + Vite 8 + Ant Design 6 + ECharts 6（黑白灰单色主题，CSS 变量驱动） |
 
 ## 架构
@@ -182,12 +183,26 @@ RAG 检索质量用 `eval/run_eval.py` 在 14 条人工标注问答上评测（�
 
 ## 快速开始
 
+### Docker 一键启动（推荐）
+
+```bash
+# 先准备好 .env（复制 .env.example 并填入 Key）
+docker compose up -d
+```
+
+- 前端：http://localhost:5173
+- 后端接口文档：http://localhost:8000/docs
+- 首次构建约 10 分钟（下载基础镜像 + 安装依赖），之后启动只需几秒
+- `uploads/`、`chroma_db/`、`models/`、`data/` 都通过**卷挂载**，容器重建数据不丢，嵌入模型也不用在容器里重新下载
+
+> ⚠️ **国内网络注意**：两个 Dockerfile 的基础镜像都加了国内镜像源前缀（`docker.m.daocloud.io/library/`），否则会卡在 `auth.docker.io` 认证超时。想换回官方源，把该前缀删掉即可。
+
 ### 环境要求
-- Python 3.10+（开发环境 3.12）
-- Node.js 18+
+- **Docker Desktop**（一键启动方式），或
+- Python 3.10+（开发环境 3.12）+ Node.js 18+（本地开发方式）
 - 豆包大模型 API Key（火山方舟）
 
-### 后端
+### 后端（本地开发）
 
 ```bash
 python -m venv venv
@@ -249,7 +264,10 @@ ai-data-project/
 ├── codegen.py               # AI 代码生成的安全校验与受限执行
 ├── mcp_server.py            # MCP Server：把工具开放给任意 MCP 客户端
 ├── mcp_smoke_test.py        # MCP 端到端自测（官方 SDK 客户端）
-├── tests/                   # pytest 单元测试（31 个用例，不依赖大模型）
+├── Dockerfile               # 后端镜像（Python 3.12-slim + libgomp1）
+├── docker-compose.yml       # 一键启动：后端 + 前端 nginx
+├── .dockerignore            # 排除 venv / models / node_modules，否则镜像几个 GB
+├── tests/                   # pytest 单元测试（70 个用例，不依赖大模型）
 ├── eval/                    # 检索评测：qa_set.json 评测集 + run_eval.py
 ├── requirements.txt
 ├── .env.example             # 配置模板（复制为 .env 后填密钥）
@@ -262,8 +280,13 @@ ai-data-project/
     ├── src/
     │   ├── App.jsx          # 数据分析页 + 模块切换
     │   ├── RagPanel.jsx     # 知识库问答页
+    │   ├── MultiPanel.jsx   # 多智能体协同页
+    │   ├── CodePanel.jsx    # 代码生成页
+    │   ├── MetricsBar.jsx   # 模型调用监控条
     │   ├── App.css
     │   └── index.css        # 设计变量与全局样式
+    ├── Dockerfile           # 多阶段构建：Node 编译 → Nginx 托管
+    ├── nginx.conf           # SPA 回落 + /api 反向代理到后端
     └── package.json
 ```
 
@@ -290,6 +313,8 @@ ai-data-project/
 8. **单元测试第一次运行就抓到一个静默 bug**：`_parse_ranked` 的兜底正则写的是 `\d+`，它**不匹配负号** —— 模型输出的 `-3` 会被抓成 `3`，负数编号摇身变成合法索引，**静默取到错误片段且不报错**。改成 `-?\d+` 后修复。这类边界情况线上几乎不会触发，靠手工点界面基本发现不了，正是单元测试的价值所在。
 9. **模型会把"元数据问题"当成"检索问题"**：问"知识库里有哪些文档"，模型答"有两份"（实际 6 份）—— 因为它手里只有检索工具，只能从召回的 top-3 片段**反推总数**。修法是给工具集补一个"列出文档清单"的工具，并在系统提示词里明确"这类问题必须用清单工具、不要从片段反推"。**教训：不要指望模型用 A 类工具回答 B 类问题 —— 该给的工具要给全。**
 10. **SQLite 连接与 FastAPI 线程池不兼容**：做会话记忆持久化时，`SqliteSaver` 需要一个 `sqlite3.Connection`，而 Python 的 SQLite 连接**默认绑定创建它的线程**；FastAPI 的同步接口跑在线程池里，请求落在别的线程就会抛 `SQLite objects created in a thread can only be used in that same thread`。解法是 `sqlite3.connect(path, check_same_thread=False)`。另外 `SqliteSaver.from_conn_string()` 是个**上下文管理器**（退出即关连接），长期服务要用**直接构造** `SqliteSaver(conn)` 并显式调用一次 `setup()` 建表。
+11. **国内网络拉 Docker 基础镜像会卡在认证**：`docker compose build` 报 `failed to fetch oauth token: Post "https://auth.docker.io/token" ... 超时`，而且日志里是一个 **IPv6 地址**（大概率本机没有可用 IPv6）。解法是给 `FROM` 加国内镜像源前缀（`docker.m.daocloud.io/library/...`），或在 Docker Desktop 里配 `registry-mirrors`。
+12. **容器里 pip 报 `from versions: none` 是**误导性错误**：构建时 `pip install` 明明能从阿里云源下到 fastapi/uvicorn，却在 `pandas==3.0.6` 上报 `Could not find a version that satisfies the requirement ... (from versions: none)`。查证后发现**源上明明有该版本的 manylinux cp312 wheel** —— 真正原因是 pandas 的索引页太大（300+ 版本 / 几千个文件），容器网络在拉取这个大页面时超时，pip 便解析成"没有任何版本"。解法：`PIP_DEFAULT_TIMEOUT=180` + `PIP_RETRIES=10` + 先升级 pip。**教训：报错信息说的是"找不到版本"，但根因是网络超时 —— 不能只看字面。**
 
 ## License
 
