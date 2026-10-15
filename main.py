@@ -11,6 +11,7 @@ import sqlite3
 import tempfile
 import time
 import re
+import codegen
 import observability
 from pypdf import PdfReader
 from docx import Document as DocxDocument
@@ -1064,3 +1065,73 @@ def multi_analyze(req: MultiRequest):
         "answer": state.get("answer") or "",
         "elapsed_ms": round((time.perf_counter() - t0) * 1000),
     }
+    
+
+# ==================== AI 代码生成（生成 → 人工确认 → 受限执行） ====================
+_CODE_GEN_PROMPT = """你是 pandas 代码生成器。根据表格结构和用户问题，生成一段可直接运行的 pandas 代码。
+
+严格约束：
+1. 只能使用已提供的 `pd`（pandas）和 `df`（数据表）两个变量，禁止 import 任何模块
+2. 禁止读写文件、访问网络，禁止使用 eval / exec / open
+3. 用 print() 输出结果，代码不超过 15 行
+4. 只输出代码本身，不要解释文字、不要 markdown 围栏
+
+表格：{filename}（{rows} 行 × {cols} 列）
+列名与类型：{schema}
+
+用户问题：{question}
+"""
+
+
+class CodeGenRequest(BaseModel):
+    filename: str
+    question: str
+
+
+class CodeRunRequest(BaseModel):
+    filename: str
+    code: str
+
+
+@app.post("/code/generate")
+def generate_code(req: CodeGenRequest):
+    """让模型生成 pandas 代码（只生成，不执行）"""
+    file_path = os.path.join(UPLOAD_DIR, safe_filename(req.filename))
+    if not os.path.exists(file_path):
+        return {"success": False, "error": "文件不存在，请重新上传"}
+    try:
+        df = load_dataframe(file_path)
+    except Exception as e:
+        return {"success": False, "error": f"文件解析失败：{str(e)[:120]}"}
+
+    schema = ", ".join(f"{c}({t})" for c, t in list(df.dtypes.astype(str).items())[:40])
+    prompt = _CODE_GEN_PROMPT.format(
+        filename=req.filename, rows=len(df), cols=len(df.columns),
+        schema=schema, question=req.question,
+    )
+    try:
+        raw = call_ai(prompt, label="codegen")
+    except Exception as e:
+        return {"success": False, "error": str(e)[:200]}
+
+    code = codegen.strip_code_fence(raw)
+    safe, issues = codegen.check_code_safety(code)
+    return {"success": True, "code": code, "safe": safe, "issues": issues}
+
+
+@app.post("/code/run")
+def run_generated_code(req: CodeRunRequest):
+    """执行用户确认过的代码（受限环境 + 接口层再校验一次）"""
+    file_path = os.path.join(UPLOAD_DIR, safe_filename(req.filename))
+    if not os.path.exists(file_path):
+        return {"success": False, "error": "文件不存在，请重新上传"}
+    try:
+        df = load_dataframe(file_path)
+    except Exception as e:
+        return {"success": False, "error": f"文件解析失败：{str(e)[:120]}"}
+
+    # 纵深防御：不信任前端传来的代码，接口层再做一次安全校验
+    result = codegen.exec_pandas_code(req.code, df)
+    if not result["ok"]:
+        return {"success": False, "error": result["error"], "output": result.get("output", "")}
+    return {"success": True, "output": result["output"]}

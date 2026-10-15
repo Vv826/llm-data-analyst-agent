@@ -934,3 +934,37 @@
   min-width: 0;
   max-width: 100%;
 }
+/* ==================== 代码生成面板 ==================== */
+.code-editor,
+.code-editor textarea {
+  font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  background: var(--surface-sunken);
+}
+.code-safe.ant-tag {
+  color: var(--ink-700);
+  background: var(--surface-sunken);
+  border: 1px solid var(--line);
+}
+.code-run {
+  margin-top: 12px;
+}
+.code-output {
+  margin: 0;
+  padding: 12px 14px;
+  max-height: 320px;
+  overflow: auto;
+  font-family: 'Cascadia Code', Consolas, 'Courier New', monospace;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--line);
+  background: var(--ink-900);
+  border-radius: var(--radius-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.code-output.is-error {
+  color: #fecaca;
+  background: #450a0a;
+}

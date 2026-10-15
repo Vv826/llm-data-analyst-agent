@@ -31,6 +31,7 @@ import ReactECharts from 'echarts-for-react'
 import RagPanel from './RagPanel'
 import MetricsBar from './MetricsBar'
 import MultiPanel from './MultiPanel'
+import CodePanel from './CodePanel'
 import './App.css'
 
 const { TextArea } = Input
@@ -346,6 +347,7 @@ function App() {
               { label: '数据分析', value: 'data' },
               { label: '知识库问答', value: 'rag' },
               { label: '多智能体协同', value: 'multi' },
+              { label: '代码生成', value: 'code' },
             ]}
           />
         </div>
@@ -616,6 +618,7 @@ function App() {
 
         {mode === 'rag' && <RagPanel />}
         {mode === 'multi' && <MultiPanel />}
+        {mode === 'code' && <CodePanel />}
         <MetricsBar />
       </main>
     </div>
